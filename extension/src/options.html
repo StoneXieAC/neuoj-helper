@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NEUOJ 小助手设置</title>
+  <link rel="stylesheet" href="options.css">
+</head>
+<body>
+  <main>
+    <h1>NEUOJ 小助手</h1>
+    <p>配置兼容 OpenAI Chat Completions 的模型接口。API Key 仅保存在本机插件存储中。</p>
+    <form id="settings">
+      <label for="baseUrl">API Base URL</label>
+      <input id="baseUrl" name="baseUrl" type="url" required spellcheck="false" autocomplete="url">
+      <label for="apiKey">API Key</label>
+      <input id="apiKey" name="apiKey" type="password" required spellcheck="false" autocomplete="off">
+      <label for="model">Model</label>
+      <input id="model" name="model" type="text" required spellcheck="false" autocomplete="off">
+      <label for="reasoningEffort">思考等级</label>
+      <input id="reasoningEffort" name="reasoningEffort" type="text" spellcheck="false" autocomplete="off" aria-describedby="reasoningEffortHelp">
+      <p id="reasoningEffortHelp" class="field-help">默认 low；清空后不发送 reasoning_effort，适用于不支持此参数的接口。</p>
+      <button type="submit">保存并授权接口地址</button>
+      <p id="message" role="status" aria-live="polite"></p>
+    </form>
+    <p class="note">支持任意 HTTPS 接口，也支持本机 HTTP 接口。保存时 Chrome 会请求访问所填接口域名的权限。</p>
+  </main>
+  <script src="options.js"></script>
+</body>
+</html>

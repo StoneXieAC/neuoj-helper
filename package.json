@@ -1,0 +1,15 @@
+{
+  "name": "neuoj-helper",
+  "version": "0.1.0",
+  "private": true,
+  "description": "NEUOJ 提交错误分析 Chrome 插件",
+  "scripts": {
+    "test": "node --test"
+  },
+  "devDependencies": {
+    "jsdom": "^26.1.0"
+  },
+  "dependencies": {
+    "markdown-it": "15.0.2"
+  }
+}

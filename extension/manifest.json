@@ -1,0 +1,20 @@
+{
+  "manifest_version": 3,
+  "minimum_chrome_version": "114",
+  "name": "NEUOJ 小助手",
+  "version": "0.1.0",
+  "description": "提取 NEUOJ 提交中的排错信息，按需调用兼容 OpenAI 的模型分析。",
+  "icons": { "128": "logo.png" },
+  "permissions": ["storage"],
+  "optional_host_permissions": ["https://*/*", "http://localhost/*", "http://127.0.0.1/*"],
+  "background": { "service_worker": "src/background.js" },
+  "options_ui": { "page": "src/options.html", "open_in_tab": true },
+  "action": { "default_title": "NEUOJ 小助手", "default_icon": "logo.png" },
+  "content_scripts": [
+    {
+      "matches": ["https://oj.neu.edu.cn/*", "https://webvpn.neu.edu.cn/*"],
+      "js": ["vendor/markdown-it.umd.min.js", "src/core.js", "src/content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
