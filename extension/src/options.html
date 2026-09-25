@@ -8,22 +8,34 @@
 </head>
 <body>
   <main>
-    <h1>NEUOJ 小助手</h1>
-    <p>配置兼容 OpenAI Chat Completions 的模型接口。API Key 仅保存在本机插件存储中。</p>
-    <form id="settings">
-      <label for="baseUrl">API Base URL</label>
-      <input id="baseUrl" name="baseUrl" type="url" required spellcheck="false" autocomplete="url">
-      <label for="apiKey">API Key</label>
-      <input id="apiKey" name="apiKey" type="password" required spellcheck="false" autocomplete="off">
-      <label for="model">Model</label>
-      <input id="model" name="model" type="text" required spellcheck="false" autocomplete="off">
-      <label for="reasoningEffort">思考等级</label>
-      <input id="reasoningEffort" name="reasoningEffort" type="text" spellcheck="false" autocomplete="off" aria-describedby="reasoningEffortHelp">
-      <p id="reasoningEffortHelp" class="field-help">默认 low；清空后不发送 reasoning_effort，适用于不支持此参数的接口。</p>
-      <button type="submit">保存并授权接口地址</button>
-      <p id="message" role="status" aria-live="polite"></p>
-    </form>
-    <p class="note">支持任意 HTTPS 接口，也支持本机 HTTP 接口。保存时 Chrome 会请求访问所填接口域名的权限。</p>
+    <header><h1>NEUOJ 小助手</h1><p>设置</p></header>
+    <div class="layout">
+      <nav id="categories" aria-label="设置分类"></nav>
+      <form id="settings">
+        <section id="api-panel" class="settings-panel" aria-labelledby="api-tab">
+          <h2>API 设置</h2>
+          <p class="intro">配置兼容 OpenAI Chat Completions 的模型接口。</p>
+          <label for="baseUrl">API Base URL</label>
+          <input id="baseUrl" name="baseUrl" type="url" required spellcheck="false" autocomplete="url">
+          <label for="apiKey">API Key</label>
+          <input id="apiKey" name="apiKey" type="password" required spellcheck="false" autocomplete="off">
+          <label for="model">Model</label>
+          <input id="model" name="model" type="text" required spellcheck="false" autocomplete="off">
+          <label for="reasoningEffort">思考等级</label>
+          <input id="reasoningEffort" name="reasoningEffort" type="text" spellcheck="false" autocomplete="off" aria-describedby="reasoningEffortHelp">
+          <p id="reasoningEffortHelp" class="field-help">默认 low；清空后不发送 reasoning_effort。</p>
+          <p class="field-help">API Key 仅保存在本机。保存时 Chrome 会请求访问接口域名的权限。</p>
+        </section>
+        <section id="prompt-panel" class="settings-panel" aria-labelledby="prompt-tab" hidden>
+          <h2>提示词设置</h2>
+          <p class="intro">此提示词作为系统消息发送给模型，用于指导错误分析。</p>
+          <label for="systemPrompt">系统提示词</label>
+          <textarea id="systemPrompt" name="systemPrompt" rows="15" maxlength="10000" spellcheck="false"></textarea>
+          <div class="prompt-actions"><button id="restoreDefault" type="button" class="secondary">恢复默认</button><span>恢复后点击“确定”才会保存。</span></div>
+        </section>
+        <footer><p id="message" role="status" aria-live="polite"></p><button id="save" type="submit" disabled>确定</button></footer>
+      </form>
+    </div>
   </main>
   <script src="options.js"></script>
 </body>

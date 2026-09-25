@@ -17,7 +17,7 @@ const directGeneralProblemUrl = 'https://oj.neu.edu.cn/problems/43';
 const problemHtml = '<div class="col-7"><div class="card mb-2"><div class="card-header"><a class="nav-link"><strong>求幂</strong></a></div></div><div id="problem-content-vditor"><p>计算 <span data-math="m^n">公式</span>。</p></div><div id="example-input">5 8</div><div id="example-output">390625</div></div>';
 const flush = () => new Promise(resolve => setImmediate(resolve));
 
-function setup(status, optionsResponse = { ok: true }, fetchProblem = async () => ({ ok: true, url: problemUrl, text: async () => problemHtml }), pageUrl = url, linkedProblem = problemUrl) {
+function setup(status, optionsResponse = { ok: true }, fetchProblem = async () => ({ ok: true, url: problemUrl, text: async () => problemHtml }), pageUrl = url, linkedProblem = problemUrl, cachedAnswer = null) {
   const dom = new JSDOM(`<!doctype html><html><body><a href="${linkedProblem}">返回题目</a><div id="tabs-source-code"><button data-clipboard-text="int main(){}"></button></div>
     <div id="tabs-compile-info"><div class="card-header">编译成功</div></div>
     <div class="tab-content"><div id="tabs-testcase-judging"><div class="card"><div class="card-body"><div>#001 ${status}</div>
@@ -37,7 +37,11 @@ function setup(status, optionsResponse = { ok: true }, fetchProblem = async () =
   const chrome = { runtime: {
     lastError: null,
     connect() { return port; },
-    sendMessage(message, callback) { sent = message; callback(optionsResponse); }
+    sendMessage(message, callback) {
+      if (message.type === 'GET_CACHED_RESULT') { callback({ ok: true, answer: cachedAnswer }); return; }
+      sent = message;
+      callback(optionsResponse);
+    }
   } };
   const context = { globalThis: { NEUOJCore: core, markdownit }, location: dom.window.location,
     document: dom.window.document, chrome, MutationObserver: dom.window.MutationObserver,
@@ -92,6 +96,23 @@ test('WA 点击后才发送提示词，收到首段即显示 Markdown，完成�
   assert.equal(button.textContent, '重新分析');
   assert.equal(status.dataset.state, 'success');
   assert.equal(status.textContent, '分析完成');
+});
+
+test('再次进入同一提交时直接恢复缓存，重新分析仍由用户点击触发', async () => {
+  const app = setup('答案错误', { ok: true }, undefined, url, problemUrl, '**缓存结论**');
+  const shadow = app.document.getElementById('neuoj-helper-root').shadowRoot;
+  assert.equal(shadow.querySelector('.result strong').textContent, '缓存结论');
+  assert.equal(shadow.querySelector('.status').textContent, '已恢复上次分析');
+  assert.equal(shadow.querySelector('button').textContent, '重新分析');
+  assert.equal(app.fetchCount, 0);
+  assert.equal(app.sent, undefined);
+  assert.equal(app.document.defaultView.location.href, url);
+  shadow.querySelector('button').click();
+  assert.equal(shadow.querySelector('.result').hidden, true);
+  await flush();
+  assert.equal(app.sent.type, 'ANALYZE');
+  assert.equal(app.document.defaultView.location.href, url);
+  app.emit({ type: 'DONE' });
 });
 
 test('失败状态直接显示具体原因，重试时清空旧结果并恢复加载状态', async () => {

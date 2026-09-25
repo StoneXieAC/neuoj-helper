@@ -3,8 +3,11 @@
 const DEFAULTS = { baseUrl: 'https://api.deepseek.com', model: 'deepseek-flash' };
 const MAX_ANSWER = 200000;
 const SETTINGS_WINDOW_KEY = 'settingsWindowId';
+const RESULTS_KEY = 'analysisResults';
+const MAX_RESULTS = 10;
 let systemPromptPromise;
 let optionsOpening;
+let cacheWrite = Promise.resolve();
 
 function allowedBaseUrl(value) {
   try {
@@ -35,21 +38,53 @@ async function restrictStorage() {
   await chrome.storage.local.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' });
 }
 
-function openOptionsPopup() {
+function submissionKey(raw) {
+  validateSender({ url: raw });
+  const url = new URL(raw);
+  return `${url.origin}${url.pathname.replace(/\/$/, '')}`;
+}
+
+async function cachedResult(raw) {
+  const key = submissionKey(raw);
+  const saved = await chrome.storage.local.get(RESULTS_KEY);
+  const entry = saved[RESULTS_KEY]?.find(item => item.url === key);
+  return typeof entry?.answer === 'string' && entry.answer.trim() ? entry.answer : null;
+}
+
+function saveResult(raw, answer) {
+  const key = submissionKey(raw);
+  cacheWrite = cacheWrite.catch(() => {}).then(async () => {
+    const saved = await chrome.storage.local.get(RESULTS_KEY);
+    const entries = Array.isArray(saved[RESULTS_KEY]) ? saved[RESULTS_KEY] : [];
+    await chrome.storage.local.set({ [RESULTS_KEY]: [{ url: key, answer },
+      ...entries.filter(item => item.url !== key)].slice(0, MAX_RESULTS) });
+  });
+  return cacheWrite;
+}
+
+function openOptionsPopup(entryWindowId) {
   if (!optionsOpening) {
     optionsOpening = (async () => {
       const saved = await chrome.storage.session.get(SETTINGS_WINDOW_KEY);
-      const windowId = saved[SETTINGS_WINDOW_KEY];
-      if (Number.isInteger(windowId)) {
+      const settingsWindowId = saved[SETTINGS_WINDOW_KEY];
+      if (Number.isInteger(settingsWindowId)) {
         try {
-          await chrome.windows.get(windowId);
-          await chrome.windows.update(windowId, { focused: true });
+          await chrome.windows.get(settingsWindowId);
+          await chrome.windows.update(settingsWindowId, { focused: true });
           return;
         } catch { await chrome.storage.session.remove(SETTINGS_WINDOW_KEY); }
       }
+      const size = { width: 760, height: 680 };
+      let parent;
+      try { parent = Number.isInteger(entryWindowId) ? await chrome.windows.get(entryWindowId) : await chrome.windows.getLastFocused(); }
+      catch { parent = null; }
+      const position = Number.isFinite(parent?.left) && Number.isFinite(parent?.top) &&
+        Number.isFinite(parent?.width) && Number.isFinite(parent?.height)
+        ? { left: Math.round(parent.left + (parent.width - size.width) / 2),
+          top: Math.round(parent.top + (parent.height - size.height) / 2) } : {};
       const popup = await chrome.windows.create({
         url: chrome.runtime.getURL('src/options.html'),
-        type: 'popup', width: 480, height: 560, focused: true
+        type: 'popup', ...size, ...position, focused: true
       });
       if (!Number.isInteger(popup?.id)) throw new Error('无法打开接口设置窗口。');
       await chrome.storage.session.set({ [SETTINGS_WINDOW_KEY]: popup.id });
@@ -155,6 +190,7 @@ async function consumeEvents(response, emit, resetIdle) {
   }
   if (!finished) throw new Error('模型输出中途断开，请重试。');
   if (!answer.trim()) throw new Error('模型接口没有返回可显示的分析内容。');
+  return answer;
 }
 
 async function analyze(prompt, sender, emit, controller, resetIdle) {
@@ -163,7 +199,7 @@ async function analyze(prompt, sender, emit, controller, resetIdle) {
     throw new Error('分析内容无效或超过长度限制。');
   }
   await restrictStorage();
-  const settings = await chrome.storage.local.get(['baseUrl', 'apiKey', 'model', 'reasoningEffort']);
+  const settings = await chrome.storage.local.get(['baseUrl', 'apiKey', 'model', 'reasoningEffort', 'systemPrompt']);
   const baseUrl = allowedBaseUrl(settings.baseUrl || DEFAULTS.baseUrl);
   const apiKey = String(settings.apiKey || '').trim();
   const model = String(settings.model || DEFAULTS.model).trim();
@@ -175,7 +211,10 @@ async function analyze(prompt, sender, emit, controller, resetIdle) {
   if (!await chrome.permissions.contains({ origins: [origin] })) {
     throw new Error('尚未授权访问模型接口，请在插件设置中保存并授权接口地址。');
   }
-  const systemPrompt = await loadSystemPrompt();
+  const systemPrompt = settings.systemPrompt == null ? await loadSystemPrompt() : settings.systemPrompt;
+  if (typeof systemPrompt !== 'string' || !systemPrompt.trim() || systemPrompt.length > 10000) {
+    throw new Error('系统提示词无效，请在插件设置中检查。');
+  }
   const messages = [{ role: 'system', content: systemPrompt }, { role: 'user', content: prompt }];
 
   async function request(stream) {
@@ -208,23 +247,29 @@ async function analyze(prompt, sender, emit, controller, resetIdle) {
       if (error?.name === 'AbortError') throw error;
       throw new Error('模型接口返回的不是有效 JSON。');
     }
-    emit(answerFromJson(payload));
+    const answer = answerFromJson(payload);
+    emit(answer);
+    return answer;
   } else {
-    await consumeEvents(response, emit, resetIdle);
+    return consumeEvents(response, emit, resetIdle);
   }
 }
 
 chrome.runtime.onInstalled.addListener(() => { restrictStorage().catch(console.error); });
 chrome.runtime.onStartup.addListener(() => { restrictStorage().catch(console.error); });
 restrictStorage().catch(console.error);
-chrome.action.onClicked.addListener(() => { openOptionsPopup().catch(console.error); });
+chrome.action.onClicked.addListener(tab => { openOptionsPopup(tab?.windowId).catch(console.error); });
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (message?.type !== 'OPEN_OPTIONS') return false;
+  if (!['OPEN_OPTIONS', 'GET_CACHED_RESULT'].includes(message?.type)) return false;
   (async () => {
     validateSender(sender);
-    await openOptionsPopup();
-  })().then(() => sendResponse({ ok: true }), error => sendResponse({ ok: false, error: error.message || '操作失败。' }));
+    if (message.type === 'OPEN_OPTIONS') {
+      await openOptionsPopup(sender.tab?.windowId);
+      return { ok: true };
+    }
+    return { ok: true, answer: await cachedResult(sender.url) };
+  })().then(sendResponse, error => sendResponse({ ok: false, error: error.message || '操作失败。' }));
   return true;
 });
 
@@ -245,7 +290,12 @@ chrome.runtime.onConnect.addListener(port => {
       catch { disconnected = true; controller.abort(); }
     };
     analyze(message.prompt, port.sender, text => post({ type: 'DELTA', text }), controller, timeout.resetIdle)
-      .then(() => post({ type: 'DONE' }), error => {
+      .then(async answer => {
+        if (!disconnected) {
+          try { await saveResult(port.sender.url, answer); } catch (error) { console.error(error); }
+          post({ type: 'DONE' });
+        }
+      }, error => {
         if (disconnected) return;
         const reason = timeout.didTimeOut() || error?.name === 'AbortError'
           ? '模型请求超时，请稍后重试。'

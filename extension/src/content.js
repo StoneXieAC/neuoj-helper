@@ -106,7 +106,7 @@
     settings.className = 'settings';
     settings.setAttribute('aria-label', '接口设置');
     settings.title = '接口设置';
-    settings.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-1.86 1.86-.06-.06A1.7 1.7 0 0 0 16 18.4a1.7 1.7 0 0 0-1 1.56V21h-2v-.08a1.7 1.7 0 0 0-1.04-1.57 1.7 1.7 0 0 0-1.88.34l-.06.06-1.86-1.86.06-.06A1.7 1.7 0 0 0 8.56 16a1.7 1.7 0 0 0-1.56-1H6v-2h.08a1.7 1.7 0 0 0 1.57-1.04 1.7 1.7 0 0 0-.34-1.88l-.06-.06 1.86-1.86.06.06A1.7 1.7 0 0 0 11 8.56 1.7 1.7 0 0 0 12 7V6h2v.08a1.7 1.7 0 0 0 1.04 1.57 1.7 1.7 0 0 0 1.88-.34l.06-.06 1.86 1.86-.06.06A1.7 1.7 0 0 0 18.4 11a1.7 1.7 0 0 0 1.56 1H21v2h-.08A1.7 1.7 0 0 0 19.4 15Z"></path></svg>';
+    settings.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h9m4 0h3M4 17h3m4 0h9"></path><circle cx="15" cy="7" r="2"></circle><circle cx="9" cy="17" r="2"></circle></svg>';
     settings.addEventListener('click', () => {
       chrome.runtime.sendMessage({ type: 'OPEN_OPTIONS' }, response => {
         if (chrome.runtime.lastError || !response?.ok) {
@@ -123,6 +123,7 @@
     let heartbeat;
     let scheduledFrame;
     let answer = '';
+    let analysisStarted = false;
     function render() {
       scheduledFrame = null;
       try { result.innerHTML = markdown.render(answer); }
@@ -163,6 +164,7 @@
         setStatus('error', '当前没有可分析的失败结果，请等待评测完成或刷新页面。');
         return;
       }
+      analysisStarted = true;
       button.disabled = true;
       setStatus('loading', '正在获取题面…');
       answer = '';
@@ -215,6 +217,15 @@
     const target = document.getElementById('tabs-source-code')?.closest('.tab-content') || document.getElementById('tabs-source-code');
     target?.parentElement?.insertBefore(host, target);
     mounted = !!host.isConnected;
+    if (mounted && report.status !== 'PENDING') {
+      chrome.runtime.sendMessage({ type: 'GET_CACHED_RESULT' }, response => {
+        if (analysisStarted || !response?.ok || typeof response.answer !== 'string' || !response.answer.trim()) return;
+        answer = response.answer;
+        render();
+        button.textContent = '重新分析';
+        setStatus('success', '已恢复上次分析');
+      });
+    }
     return mounted;
   }
 
