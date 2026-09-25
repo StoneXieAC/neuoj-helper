@@ -9,13 +9,15 @@ const html = fs.readFileSync(path.join(__dirname, '../extension/src/options.html
 const script = fs.readFileSync(path.join(__dirname, '../extension/src/options.js'), 'utf8');
 const defaultPrompt = fs.readFileSync(path.join(__dirname, '../extension/prompts/system.md'), 'utf8').trim();
 
-async function setup(granted = true, stored = {}, saveFails = false) {
+async function setup(granted = true, stored = {}, saveFails = false, connectionResponse = { ok: true }) {
   const dom = new JSDOM(html, { url: 'chrome-extension://example/src/options.html' });
   let requested;
   let saved;
   let closed = false;
+  let tested;
   const chrome = {
-    runtime: { getURL(name) { return `chrome-extension://example/${name}`; } },
+    runtime: { getURL(name) { return `chrome-extension://example/${name}`; },
+      sendMessage(value, callback) { tested = value; callback(connectionResponse); } },
     permissions: { async request(value) { requested = value; return granted; } },
     storage: { local: { async get() { return stored; }, async setAccessLevel() {}, async set(value) {
       if (saveFails) throw new Error('磁盘不可用');
@@ -25,21 +27,22 @@ async function setup(granted = true, stored = {}, saveFails = false) {
   const fetch = async () => new Response(defaultPrompt);
   vm.runInNewContext(script, { document: dom.window.document, URL, chrome, fetch, window: { close() { closed = true; } } });
   await new Promise(resolve => setImmediate(resolve));
-  return { document: dom.window.document, get requested() { return requested; }, get saved() { return saved; }, get closed() { return closed; } };
+  return { document: dom.window.document, get requested() { return requested; }, get saved() { return saved; },
+    get tested() { return tested; }, get closed() { return closed; } };
 }
 
 test('设置页使用默认 DeepSeek 配置并按域名申请权限', async () => {
   const app = await setup();
   assert.equal(app.document.getElementById('baseUrl').value, 'https://api.deepseek.com');
   assert.equal(app.document.getElementById('model').value, 'deepseek-flash');
-  assert.equal(app.document.getElementById('reasoningEffort').value, 'low');
+  assert.equal(app.document.getElementById('reasoningEffort').value, '');
   app.document.getElementById('baseUrl').value = 'http://localhost:8765/v1/';
   app.document.getElementById('apiKey').value = 'secret';
   app.document.getElementById('model').value = 'another-model';
   app.document.getElementById('settings').dispatchEvent(new app.document.defaultView.Event('submit', { cancelable: true }));
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(app.requested.origins[0], 'http://localhost/*');
-  assert.deepEqual(JSON.parse(JSON.stringify(app.saved)), { baseUrl: 'http://localhost:8765/v1', apiKey: 'secret', model: 'another-model', reasoningEffort: 'low', systemPrompt: null });
+  assert.deepEqual(JSON.parse(JSON.stringify(app.saved)), { baseUrl: 'http://localhost:8765/v1', apiKey: 'secret', model: 'another-model', reasoningEffort: '', systemPrompt: null });
   assert.equal(app.closed, true);
 });
 
@@ -56,6 +59,22 @@ test('思考等级可自由填写，清空后仍能保存为空值', async () =>
   app.document.getElementById('settings').dispatchEvent(new app.document.defaultView.Event('submit', { cancelable: true }));
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(app.saved.reasoningEffort, '');
+});
+
+test('测试连接使用未保存的表单值，不写入设置', async () => {
+  const app = await setup();
+  const doc = app.document;
+  doc.getElementById('baseUrl').value = 'https://draft.example/v1';
+  doc.getElementById('apiKey').value = 'draft-key';
+  doc.getElementById('model').value = 'draft-model';
+  doc.getElementById('testConnection').click();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(app.requested.origins[0], 'https://draft.example/*');
+  assert.equal(app.tested.type, 'TEST_CONNECTION');
+  assert.equal(app.tested.settings.model, 'draft-model');
+  assert.equal(app.tested.settings.reasoningEffort, '');
+  assert.equal(app.saved, undefined);
+  assert.match(doc.getElementById('message').textContent, /连接测试成功/);
 });
 
 test('拒绝接口权限时不会保存设置', async () => {

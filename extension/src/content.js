@@ -104,6 +104,8 @@
     result.className = 'result';
     result.hidden = true;
     let activePort;
+    let activeProblem;
+    let problemTimer;
     let heartbeat;
     let scheduledFrame;
     let answer = '';
@@ -111,11 +113,11 @@
     let verdictStatus = report.status;
     let verdictVersion = 0;
     function restoreCachedResult() {
-      if (analysisStarted || verdictStatus === 'AC' || verdictStatus === 'PENDING') return;
+      if (analysisStarted || ['AC', 'PENDING', 'UNKNOWN'].includes(verdictStatus)) return;
       const currentVersion = verdictVersion;
       chrome.runtime.sendMessage({ type: 'GET_CACHED_RESULT' }, response => {
         if (analysisStarted || currentVersion !== verdictVersion ||
-          verdictStatus === 'AC' || verdictStatus === 'PENDING' || chrome.runtime.lastError ||
+          ['AC', 'PENDING', 'UNKNOWN'].includes(verdictStatus) || chrome.runtime.lastError ||
           !response?.ok || typeof response.answer !== 'string' || !response.answer.trim()) return;
         answer = response.answer;
         render();
@@ -134,6 +136,9 @@
       scheduledFrame = requestAnimationFrame(render);
     }
     function finish(state, message) {
+      clearTimeout(problemTimer);
+      problemTimer = null;
+      activeProblem = null;
       clearInterval(heartbeat);
       heartbeat = null;
       activePort = null;
@@ -147,6 +152,10 @@
       if (nextStatus === verdictStatus) return;
       verdictStatus = nextStatus;
       verdictVersion++;
+      clearTimeout(problemTimer);
+      problemTimer = null;
+      activeProblem?.abort();
+      activeProblem = null;
       clearInterval(heartbeat);
       heartbeat = null;
       if (activePort) {
@@ -166,6 +175,9 @@
       } else if (nextStatus === 'PENDING') {
         button.disabled = true;
         setStatus('waiting', '等待评测');
+      } else if (nextStatus === 'UNKNOWN') {
+        button.disabled = true;
+        setStatus('error', '无法识别评测结果，请刷新页面后重试。');
       } else {
         button.disabled = false;
         setStatus('idle');
@@ -178,38 +190,69 @@
     } else if (report.status === 'PENDING') {
       button.disabled = true;
       setStatus('waiting', '等待评测');
+    } else if (report.status === 'UNKNOWN') {
+      button.disabled = true;
+      setStatus('error', '无法识别评测结果，请刷新页面后重试。');
     }
     button.addEventListener('click', async () => {
+      if (activeProblem) {
+        activeProblem.abort();
+        finish('idle', '已取消获取题面，可重新分析。');
+        return;
+      }
       const latest = core.extractSubmission(document, location.href);
-      if (!latest || latest.status === 'AC' || latest.status === 'PENDING') {
+      if (!latest || ['AC', 'PENDING', 'UNKNOWN'].includes(latest.status)) {
         if (latest) updateVerdict(latest.status);
         if (latest?.status === 'AC') return;
-        setStatus('error', '当前没有可分析的失败结果，请等待评测完成或刷新页面。');
+        setStatus('error', latest?.status === 'UNKNOWN' ? '无法识别评测结果，请刷新页面后重试。'
+          : '当前没有可分析的失败结果，请等待评测完成或刷新页面。');
         return;
       }
       updateVerdict(latest.status);
       const currentVersion = verdictVersion;
       analysisStarted = true;
-      button.disabled = true;
+      button.textContent = '取消';
       setStatus('loading', '正在获取题面…');
       answer = '';
       result.hidden = true;
       const url = core.problemUrl(document, location.href);
       if (!url) { finish('error', '无法定位对应题面，请刷新提交页面后重试。'); return; }
       let problem;
+      const controller = new AbortController();
+      activeProblem = controller;
+      let timedOut = false;
+      const deadline = new Promise((_, reject) => {
+        problemTimer = setTimeout(() => {
+          timedOut = true;
+          controller.abort();
+          reject(new Error('获取题面超时。'));
+        }, 30000);
+      });
       try {
-        const response = await fetch(url, { credentials: 'same-origin' });
-        if (!response.ok || !response.url || new URL(response.url).href !== url) {
-          throw new Error('题面页面不可用或登录已失效。');
-        }
-        problem = core.extractProblem(new DOMParser().parseFromString(await response.text(), 'text/html'));
-        if (!problem) throw new Error('题面页面中未找到正文。');
+        problem = await Promise.race([(async () => {
+          const response = await fetch(url, { credentials: 'same-origin', signal: controller.signal });
+          if (!response.ok || !response.url || new URL(response.url).href !== url) {
+            throw new Error('题面页面不可用或登录已失效。');
+          }
+          const html = await response.text();
+          if (controller.signal.aborted) throw new Error('题面请求已取消。');
+          const parsed = core.extractProblem(new DOMParser().parseFromString(html, 'text/html'));
+          if (!parsed) throw new Error('题面页面中未找到正文。');
+          return parsed;
+        })(), deadline]);
       } catch (error) {
         if (currentVersion !== verdictVersion) return;
-        finish('error', `无法获取题面：${error.message || '请求失败。'}请刷新页面或重新登录后重试。`);
+        if (activeProblem !== controller) return;
+        finish('error', timedOut ? '获取题面超时，请重试。'
+          : `无法获取题面：${error.message || '请求失败。'}请刷新页面或重新登录后重试。`);
         return;
       }
-      if (currentVersion !== verdictVersion) return;
+      if (currentVersion !== verdictVersion || activeProblem !== controller) return;
+      clearTimeout(problemTimer);
+      problemTimer = null;
+      activeProblem = null;
+      button.disabled = true;
+      button.textContent = '重新分析';
       const prompt = core.buildPrompt(latest, problem);
       if (!prompt) { finish('error', '无法生成分析内容，请刷新页面后重试。'); return; }
       setStatus('loading', '正在分析…');

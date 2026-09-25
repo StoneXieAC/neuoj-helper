@@ -20,7 +20,7 @@ const problemHtml = '<div class="col-7"><div class="card mb-2"><div class="card-
 const contestProblemHtml = '<div class="col-7"><div class="card mb-2"><div class="card-header"><a class="nav-link"><strong>J - 状态转换</strong></a></div></div><div id="problem-content-vditor"><p>按规则转换状态。</p></div><div id="example-input">3</div><div id="example-output">7</div></div>';
 const flush = () => new Promise(resolve => setImmediate(resolve));
 
-function setup(status, optionsResponse = { ok: true }, fetchProblem = async () => ({ ok: true, url: problemUrl, text: async () => problemHtml }), pageUrl = url, linkedProblem = problemUrl, cachedAnswer = null) {
+function setup(status, optionsResponse = { ok: true }, fetchProblem = async () => ({ ok: true, url: problemUrl, text: async () => problemHtml }), pageUrl = url, linkedProblem = problemUrl, cachedAnswer = null, timers = null) {
   const dom = new JSDOM(`<!doctype html><html><body><a href="${linkedProblem}">返回题目</a><div id="tabs-source-code"><button data-clipboard-text="int main(){}"></button></div>
     <div id="tabs-compile-info"><div class="card-header">编译成功</div></div>
     <div class="tab-content"><div id="tabs-testcase-judging"><div class="card"><div class="card-body"><div>#001 ${status}</div>
@@ -55,7 +55,8 @@ function setup(status, optionsResponse = { ok: true }, fetchProblem = async () =
   const context = { globalThis: { NEUOJCore: core, markdownit }, location: dom.window.location,
     document: dom.window.document, chrome, MutationObserver: dom.window.MutationObserver,
     DOMParser: dom.window.DOMParser, fetch: (...args) => { fetchCount++; return fetchProblem(...args); }, URL,
-    setTimeout, setInterval, clearInterval,
+    setTimeout: timers?.setTimeout || setTimeout, clearTimeout: timers?.clearTimeout || clearTimeout,
+    setInterval, clearInterval, AbortController,
     requestAnimationFrame: fn => setTimeout(fn, 0), cancelAnimationFrame: clearTimeout };
   vm.runInNewContext(script, context);
   return {
@@ -263,7 +264,8 @@ test('题面请求失败、跳转登录页或正文缺失时停止分析并可�
     const shadow = app.document.getElementById('neuoj-helper-root').shadowRoot;
     const button = shadow.querySelector('button');
     button.click();
-    assert.equal(button.disabled, true);
+    assert.equal(button.textContent, '取消');
+    assert.equal(button.disabled, false);
     await flush();
     assert.equal(app.sent, undefined);
     assert.equal(button.disabled, false);
@@ -376,6 +378,93 @@ test('评测中转为 AC 时保留面板并禁用分析', async () => {
   assert.equal(host.shadowRoot.querySelector('button').disabled, true);
   assert.equal(host.shadowRoot.querySelector('.status').textContent, '恭喜，成功 AC 这道题');
   assert.equal(app.fetchCount, 0);
+});
+
+test('未知评测结果显示解析错误且不允许发起请求', () => {
+  const app = setup('未定义结果');
+  const shadow = app.document.getElementById('neuoj-helper-root').shadowRoot;
+  assert.equal(shadow.querySelector('button').disabled, true);
+  assert.match(shadow.querySelector('.status').textContent, /无法识别评测结果/);
+  assert.equal(app.fetchCount, 0);
+});
+
+test('题面请求即使不响应取消信号，超时后也恢复手动重试', async () => {
+  let expire;
+  let aborted = false;
+  let calls = 0;
+  const timers = {
+    setTimeout(fn, delay) {
+      if (delay === 30000) { expire = fn; return 123456; }
+      return setTimeout(fn, delay);
+    },
+    clearTimeout(id) { if (id !== 123456) clearTimeout(id); }
+  };
+  const app = setup('答案错误', { ok: true }, (_, options) => {
+    calls++;
+    options.signal.addEventListener('abort', () => { aborted = true; });
+    return calls === 1 ? new Promise(() => {})
+      : Promise.resolve({ ok: true, url: problemUrl, text: async () => problemHtml });
+  }, url, problemUrl, null, timers);
+  const shadow = app.document.getElementById('neuoj-helper-root').shadowRoot;
+  const button = shadow.querySelector('button');
+  button.click();
+  assert.equal(button.textContent, '取消');
+  expire();
+  await flush();
+  assert.equal(aborted, true);
+  assert.equal(button.disabled, false);
+  assert.match(shadow.querySelector('.status').textContent, /超时/);
+  button.click();
+  await flush();
+  assert.equal(calls, 2);
+  assert.equal(app.sent.type, 'ANALYZE');
+  app.emit({ type: 'DONE' });
+});
+
+test('取消题面请求后可重试，旧请求返回不会覆盖新分析', async () => {
+  let resolveOld;
+  let firstSignal;
+  let calls = 0;
+  const app = setup('答案错误', { ok: true }, (_, options) => {
+    calls++;
+    if (calls === 1) {
+      firstSignal = options.signal;
+      return new Promise(resolve => { resolveOld = resolve; });
+    }
+    return Promise.resolve({ ok: true, url: problemUrl, text: async () => problemHtml });
+  });
+  const shadow = app.document.getElementById('neuoj-helper-root').shadowRoot;
+  const button = shadow.querySelector('button');
+  button.click();
+  button.click();
+  assert.equal(firstSignal.aborted, true);
+  assert.equal(button.disabled, false);
+  button.click();
+  await flush();
+  assert.equal(app.sent.type, 'ANALYZE');
+  resolveOld({ ok: true, url: problemUrl, text: async () => problemHtml });
+  await flush();
+  assert.equal(app.sent.type, 'ANALYZE');
+  app.emit({ type: 'DONE' });
+});
+
+test('评测状态变化会取消在途题面请求并忽略迟到结果', async () => {
+  let resolveProblem;
+  let signal;
+  const app = setup('答案错误', { ok: true }, (_, options) => {
+    signal = options.signal;
+    return new Promise(resolve => { resolveProblem = resolve; });
+  });
+  const shadow = app.document.getElementById('neuoj-helper-root').shadowRoot;
+  shadow.querySelector('button').click();
+  app.document.querySelector('#tabs-testcase-judging .card-body > div').textContent = '#001 答案正确';
+  await flush();
+  assert.equal(signal.aborted, true);
+  assert.equal(shadow.querySelector('button').disabled, true);
+  assert.match(shadow.querySelector('.status').textContent, /成功 AC/);
+  resolveProblem({ ok: true, url: problemUrl, text: async () => problemHtml });
+  await flush();
+  assert.equal(app.sent, undefined);
 });
 
 test('先出现 AC 测试点、后出现失败点时恢复分析能力', async () => {

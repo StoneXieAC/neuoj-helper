@@ -150,30 +150,49 @@
     return nodeText(doc.getElementById(id)?.querySelector('.modal-body'));
   }
 
+  function modalRawBody(doc, id) {
+    const body = doc.getElementById(id)?.querySelector('.modal-body');
+    if (!body) return '';
+    const parts = [];
+    function walk(node) {
+      if (node.nodeType === 3) { parts.push(node.nodeValue); return; }
+      if (node.nodeType !== 1) return;
+      if (node.tagName.toLowerCase() === 'br') { parts.push('\n'); return; }
+      for (const child of node.childNodes) walk(child);
+    }
+    walk(body);
+    return parts.join('').replace(/\r\n?/g, '\n');
+  }
+
   function caseHeading(systemModal) {
     let parent = systemModal.parentElement;
     for (let level = 0; parent && level < 4; level++, parent = parent.parentElement) {
       for (const child of parent.children) {
         if (child === systemModal || child.contains(systemModal)) continue;
-        const directText = clean([...child.childNodes]
-          .filter(node => node.nodeType === 3).map(node => node.nodeValue).join(' '));
-        if (/#\s*\d{1,4}\s/.test(directText)) return directText;
+        const heading = nodeText(child);
+        if (/#\s*\d{1,4}\s/.test(heading)) return heading;
       }
     }
     return '';
   }
 
   function parseDiff(text) {
-    const lines = clean(text).split('\n');
+    const lines = String(text || '').replace(/\r\n?/g, '\n').split('\n');
     const sections = { expected: [], actual: [], detail: [] };
     let section = 'detail';
+    let expectedPresent = false;
+    let actualPresent = false;
     for (const line of lines) {
-      const label = /^\s*(judge|jury|team|him)\s*:\s*/i.exec(line);
-      if (label) section = /^(?:judge|jury)$/i.test(label[1]) ? 'expected' : 'actual';
+      const label = /^[ \t]*(judge|jury|team|him)[ \t]*:[ \t]?/i.exec(line);
+      if (label) {
+        section = /^(?:judge|jury)$/i.test(label[1]) ? 'expected' : 'actual';
+        if (section === 'expected') expectedPresent = true;
+        else actualPresent = true;
+      }
       sections[section].push(label ? line.slice(label[0].length) : line);
     }
-    return { expected: sections.expected.join('\n').trim(), actual: sections.actual.join('\n').trim(),
-      detail: sections.detail.join('\n').trim() };
+    return { expected: sections.expected.join('\n'), actual: sections.actual.join('\n'),
+      detail: sections.detail.join('\n').trim(), expectedPresent, actualPresent };
   }
 
   function usefulSystem(text, status = '') {
@@ -217,7 +236,7 @@
       const suffix = match[1];
       const heading = caseHeading(systemModal);
       const status = classify(heading);
-      const diffRaw = modalBody(doc, `show_output_diff${suffix}`);
+      const diffRaw = modalRawBody(doc, `show_output_diff${suffix}`);
       const error = modalBody(doc, `show_output_error${suffix}`);
       const system = usefulSystem(nodeText(systemModal.querySelector('.modal-body')), status);
       const inputMatch = [diffRaw, error].join('\n').match(/(?:^|\n)\s*(?:Input|输入|stdin)\s*:\s*([^\n]+)/i);
@@ -227,16 +246,18 @@
     }
     const failed = cases.filter(item => item.status !== 'AC' && item.status !== 'UNKNOWN');
     const kinds = [...new Set(failed.map(item => item.status))];
-    let status = 'PENDING';
+    let status = 'UNKNOWN';
     if (compileHasError) status = 'CE';
     else if (kinds.length === 1) status = kinds[0];
     else if (kinds.length > 1) status = 'MIXED';
     else if (cases.length && cases.every(item => item.status === 'AC')) status = 'AC';
+    else if ([compileLabel, ...cases.map(item => item.heading)]
+      .some(text => /等待评测|评测中|正在评测|排队中|pending|judging|running/i.test(text))) status = 'PENDING';
     return { status, source, compile, cases, url: rawUrl };
   }
 
-  function bounded(value, max, focus = -1) {
-    const text = clean(value);
+  function bounded(value, max, focus = -1, preserve = false) {
+    const text = preserve ? String(value ?? '') : clean(value);
     if (text.length <= max) return text;
     const marker = `\n${TRUNCATED}\n`;
     if (focus >= 0) {
@@ -283,13 +304,13 @@
   }
 
   function buildPrompt(report, problem) {
-    if (!report || report.status === 'AC' || report.status === 'PENDING') return null;
+    if (!report || ['AC', 'PENDING', 'UNKNOWN'].includes(report.status)) return null;
     const intro = `提交状态：${report.status}`;
     const sections = [intro];
     let remaining = MAX_PROMPT - intro.length - 30;
-    function add(title, value, limit) {
+    function add(title, value, limit, preserve = false) {
       if (!value || remaining < 100) return;
-      const capped = bounded(value, Math.min(limit, remaining - title.length - 4));
+      const capped = bounded(value, Math.min(limit, remaining - title.length - 4), -1, preserve);
       sections.push(`${title}\n${capped}`);
       remaining -= title.length + capped.length + 3;
     }
@@ -304,16 +325,23 @@
       const fields = [`测试点 #${String(item.index).padStart(3, '0')}：${item.heading || item.status}`];
       if (item.input) fields.push(`输入：${bounded(item.input, 1200)}`);
       if (item.diff.detail) fields.push(`对比说明：${bounded(item.diff.detail, 1200)}`);
-      if (item.diff.expected || item.diff.actual) {
+      if (item.diff.expectedPresent || item.diff.actualPresent || item.diff.expected || item.diff.actual) {
         const offset = firstDifference(item.diff.expected, item.diff.actual);
-        if (item.diff.expected) fields.push(`标准答案：${bounded(item.diff.expected, 1200, offset)}`);
-        if (item.diff.actual) fields.push(`用户输出：${bounded(item.diff.actual, 1200, offset)}`);
+        if (item.diff.expectedPresent || item.diff.expected) fields.push(`标准答案：${bounded(item.diff.expected, 1200, offset, true)}`);
+        if (item.diff.actualPresent || item.diff.actual) fields.push(`用户输出：${bounded(item.diff.actual, 1200, offset, true)}`);
+        if ((item.diff.expectedPresent ?? !!item.diff.expected) && (item.diff.actualPresent ?? !!item.diff.actual) &&
+          item.diff.expected !== item.diff.actual &&
+          (/\s/.test(item.diff.expected[offset] || '') || /\s/.test(item.diff.actual[offset] || '') ||
+            /^\s*$/.test(item.diff.expected.slice(offset)) || /^\s*$/.test(item.diff.actual.slice(offset)))) {
+          const visible = value => bounded(value, 1200, offset, true).replace(/ /g, '␠').replace(/\t/g, '⇥').replace(/\n/g, '↵\n');
+          fields.push(`空白差异标记（␠为空格，⇥为制表符，↵为换行）：\n标准答案：${visible(item.diff.expected)}\n用户输出：${visible(item.diff.actual)}`);
+        }
       }
       if (item.error) fields.push(`错误详情：${bounded(item.error, 1800)}`);
       if (item.system) fields.push(`系统诊断：${bounded(item.system, 1200)}`);
       return fields.join('\n');
     });
-    if (caseBlocks.length) add('【失败测试点】', caseBlocks.join('\n\n') + (report.cases.filter(item => item.status !== 'AC').length > selected.length ? `\n${TRUNCATED}（其余失败测试点未发送）` : ''), 7000);
+    if (caseBlocks.length) add('【失败测试点】', caseBlocks.join('\n\n') + (report.cases.filter(item => item.status !== 'AC').length > selected.length ? `\n${TRUNCATED}（其余失败测试点未发送）` : ''), 7000, true);
     if (report.compile.errors) add('【编译错误】', report.compile.errors, 4000);
     add('【提交源码】', sourceExcerpt(report.source || '页面未提供', report.compile.errors || ''), 12000);
     const prompt = sections.join('\n\n');

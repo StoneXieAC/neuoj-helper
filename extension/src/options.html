@@ -27,7 +27,8 @@
           <input id="model" name="model" type="text" required spellcheck="false" autocomplete="off">
           <label for="reasoningEffort">思考等级</label>
           <input id="reasoningEffort" name="reasoningEffort" type="text" spellcheck="false" autocomplete="off">
-          <p class="field-help">API Key 仅保存在本机。保存时 Chrome 会请求访问接口域名的权限。</p>
+          <button id="testConnection" type="button" class="secondary" disabled>测试连接</button>
+          <p class="field-help">API Key 仅保存在本机。测试连接会发送一次最小模型请求；保存时 Chrome 会请求访问接口域名的权限。</p>
         </section>
         <section id="prompt-panel" class="settings-panel" aria-labelledby="prompt-tab" hidden>
           <h2>提示词设置</h2>

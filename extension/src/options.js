@@ -8,6 +8,7 @@ const form = document.getElementById('settings');
 const message = document.getElementById('message');
 const saveButton = document.getElementById('save');
 const restoreButton = document.getElementById('restore');
+const testButton = document.getElementById('testConnection');
 const fields = {
   baseUrl: document.getElementById('baseUrl'),
   apiKey: document.getElementById('apiKey'),
@@ -74,9 +75,10 @@ Promise.all([
   fields.baseUrl.value = saved.baseUrl || 'https://api.deepseek.com';
   fields.apiKey.value = saved.apiKey || '';
   fields.model.value = saved.model || 'deepseek-flash';
-  fields.reasoningEffort.value = saved.reasoningEffort ?? 'low';
+  fields.reasoningEffort.value = saved.reasoningEffort ?? '';
   fields.systemPrompt.value = saved.systemPrompt == null ? prompt : saved.systemPrompt;
   saveButton.disabled = false;
+  testButton.disabled = false;
 }).catch(error => {
   message.textContent = `加载设置失败：${error.message}`;
 });
@@ -87,6 +89,37 @@ document.getElementById('restoreDefault').addEventListener('click', () => {
 });
 
 restoreButton.addEventListener('click', () => window.close());
+
+testButton.addEventListener('click', async () => {
+  const baseUrl = parseBaseUrl(fields.baseUrl.value);
+  const apiKey = fields.apiKey.value.trim();
+  const model = fields.model.value.trim();
+  const reasoningEffort = fields.reasoningEffort.value.trim();
+  if (!baseUrl || !apiKey || !model) {
+    message.textContent = '请填写有效的地址、API Key 和模型名称。接口地址须为 HTTPS 或本机 HTTP。';
+    return;
+  }
+  testButton.disabled = true;
+  message.dataset.state = 'loading';
+  message.textContent = '正在测试连接…';
+  const apiUrl = new URL(baseUrl);
+  const origin = `${apiUrl.protocol}//${apiUrl.hostname}/*`;
+  try {
+    if (!await chrome.permissions.request({ origins: [origin] })) {
+      message.textContent = '未获得接口域名权限，无法测试连接。';
+      return;
+    }
+    const response = await new Promise(resolve => {
+      chrome.runtime.sendMessage({ type: 'TEST_CONNECTION', settings: { baseUrl, apiKey, model, reasoningEffort } },
+        result => resolve(chrome.runtime.lastError ? { ok: false, error: chrome.runtime.lastError.message } : result));
+    });
+    message.dataset.state = response?.ok ? 'success' : 'error';
+    message.textContent = response?.ok ? '连接测试成功。' : `连接测试失败：${response?.error || '未知错误。'}`;
+  } catch (error) {
+    message.dataset.state = 'error';
+    message.textContent = `连接测试失败：${error.message || '未知错误。'}`;
+  } finally { testButton.disabled = false; }
+});
 
 form.addEventListener('submit', async event => {
   event.preventDefault();

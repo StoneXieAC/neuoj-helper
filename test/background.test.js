@@ -28,6 +28,7 @@ function setup({ granted = true, apiKey = 'test-secret', reasoningEffort, custom
   const loggedErrors = [];
   const chrome = {
     runtime: {
+      id: 'test',
       onInstalled: { addListener() {} }, onStartup: { addListener() {} },
       onMessage: { addListener(fn) { messageListener = fn; } },
       onConnect: { addListener(fn) { connectListener = fn; } },
@@ -92,6 +93,9 @@ function setup({ granted = true, apiKey = 'test-secret', reasoningEffort, custom
     },
     async getCached(from = sender) {
       return new Promise(resolve => { assert.equal(messageListener({ type: 'GET_CACHED_RESULT' }, from, resolve), true); });
+    },
+    async testConnection(settings, from = { id: 'test', url: 'chrome-extension://test/src/options.html' }) {
+      return new Promise(resolve => { assert.equal(messageListener({ type: 'TEST_CONNECTION', settings }, from, resolve), true); });
     },
     async clickAction(tab) { actionClicked(tab); await new Promise(resolve => setImmediate(resolve)); },
     closeOptions() { windows.delete(session.settingsWindowId); },
@@ -176,7 +180,7 @@ test('流式事件分块、跨字节字符和完成标记逐段传递，提示�
   const body = JSON.parse(app.requests[0].options.body);
   assert.equal(body.stream, true);
   assert.equal(body.model, 'custom-model');
-  assert.equal(body.reasoning_effort, 'low');
+  assert.equal('reasoning_effort' in body, false);
   assert.equal(body.messages[1].content, '提交状态：WA');
   assert.equal(body.messages[0].content, systemPrompt.trim());
   assert.match(body.messages[0].content, /100 字左右|100字左右/);
@@ -202,8 +206,8 @@ test('明确拒绝 stream 时重试非流式；忽略 stream 的接口直接显�
   assert.equal(fallback.requests.length, 2);
   assert.equal(JSON.parse(fallback.requests[0].options.body).stream, true);
   assert.equal(JSON.parse(fallback.requests[1].options.body).stream, false);
-  assert.equal(JSON.parse(fallback.requests[0].options.body).reasoning_effort, 'low');
-  assert.equal(JSON.parse(fallback.requests[1].options.body).reasoning_effort, 'low');
+  assert.equal('reasoning_effort' in JSON.parse(fallback.requests[0].options.body), false);
+  assert.equal('reasoning_effort' in JSON.parse(fallback.requests[1].options.body), false);
   assert.equal(run.events[0].text, '**原因**');
 
   const ignored = setup();
@@ -224,6 +228,47 @@ test('自定义思考等级随请求发送，空值时完全省略', async () =>
   const empty = setup({ reasoningEffort: '' });
   assert.equal((await empty.open().done).type, 'DONE');
   assert.equal('reasoning_effort' in JSON.parse(empty.requests[0].options.body), false);
+});
+
+test('HTTP 错误展示限长说明并隐藏 API Key', async () => {
+  const app = setup({ respond: () => jsonResponse({ error: { message: '不支持 reasoning_effort 参数；Bearer test-secret ' + 'x'.repeat(400) } }, 400) });
+  const result = await app.open().done;
+  assert.equal(result.type, 'ERROR');
+  assert.match(result.error, /不支持 reasoning_effort/);
+  assert.doesNotMatch(result.error, /test-secret/);
+  assert.ok(result.error.length < 270);
+});
+
+test('测试连接使用设置页草稿且不写入设置或缓存', async () => {
+  const app = setup({ respond: () => jsonResponse({ choices: [{ message: { content: '连接正常' } }] }) });
+  const settings = { baseUrl: 'https://draft.example/v1', apiKey: 'draft-secret', model: 'draft-model', reasoningEffort: '' };
+  assert.equal((await app.testConnection(settings)).ok, true);
+  assert.equal(app.requests[0].url, 'https://draft.example/v1/chat/completions');
+  const body = JSON.parse(app.requests[0].options.body);
+  assert.equal(body.model, 'draft-model');
+  assert.equal(body.stream, false);
+  assert.equal('reasoning_effort' in body, false);
+  assert.equal(app.local.model, 'custom-model');
+  assert.equal(app.local.analysisResults, undefined);
+  assert.equal((await app.testConnection(settings, sender)).ok, false);
+});
+
+test('非流式和流式长度截断均报错且不缓存', async () => {
+  const nonstream = setup({ respond: () => jsonResponse({ choices: [{ message: { content: '部分回答' }, finish_reason: 'length' }] }) });
+  const first = nonstream.open();
+  assert.match((await first.done).error, /长度上限/);
+  assert.equal((await nonstream.getCached()).answer, null);
+  const stream = setup({ respond: () => sseResponse(new ReadableStream({ start(controller) {
+    controller.enqueue(bytes('data: {"choices":[{"delta":{"content":"部分回答"}}]}\n\n'));
+    controller.enqueue(bytes('data: {"choices":[{"delta":{},"finish_reason":"length"}]}\n\n'));
+    controller.enqueue(bytes('data: [DONE]\n\n'));
+    controller.close();
+  } })) });
+  const second = stream.open();
+  assert.match((await second.done).error, /长度上限/);
+  assert.equal(second.events[0].text, '部分回答');
+  assert.equal(second.events.some(event => event.type === 'DONE'), false);
+  assert.equal((await stream.getCached()).answer, null);
 });
 
 test('后台允许直连和 WebVPN 通用提交页，拒绝伪造路径', async () => {

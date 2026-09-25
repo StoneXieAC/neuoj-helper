@@ -147,10 +147,20 @@ async function errorDetail(response) {
   } catch { return text; }
 }
 
-function httpError(status) {
-  if (status === 401 || status === 403) return new Error('接口鉴权失败，请检查 API Key 和访问权限。');
-  if (status === 429) return new Error('接口请求过于频繁，请稍后重试。');
-  return new Error(`模型接口返回 HTTP ${status}。`);
+function safeDetail(detail, apiKey = '') {
+  let text = String(detail || '').replace(/<[^>]*>/g, ' ').replace(/[\r\n\t\x00-\x1f]+/g, ' ');
+  if (apiKey) text = text.split(apiKey).join('[已隐藏]');
+  return text.replace(/Bearer\s+[^\s,;"']+/gi, 'Bearer [已隐藏]')
+    .replace(/\bsk-[a-z0-9_-]{8,}\b/gi, '[已隐藏]')
+    .replace(/\b(api[_ -]?key|authorization)\s*[:=]\s*[^\s,;]+/gi, '$1: [已隐藏]')
+    .slice(0, 200).trim();
+}
+
+function httpError(status, detail = '', apiKey = '') {
+  const prefix = status === 401 || status === 403 ? '接口鉴权失败，请检查 API Key 和访问权限。'
+    : status === 429 ? '接口请求过于频繁，请稍后重试。' : `模型接口返回 HTTP ${status}。`;
+  const safe = safeDetail(detail, apiKey);
+  return new Error(safe ? `${prefix}服务端说明：${safe}` : prefix);
 }
 
 function rejectsStreaming(status, detail) {
@@ -158,7 +168,7 @@ function rejectsStreaming(status, detail) {
     /unsupported|not support|unknown|invalid|disabled|不支持|不接受|无法|无效|禁用/i.test(detail);
 }
 
-async function consumeEvents(response, emit, resetIdle) {
+async function consumeEvents(response, emit, resetIdle, apiKey) {
   if (!response.body?.getReader) throw new Error('模型接口没有返回可读取的数据流。');
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
@@ -174,7 +184,8 @@ async function consumeEvents(response, emit, resetIdle) {
     let payload;
     try { payload = JSON.parse(data); }
     catch { throw new Error('模型接口返回了无效的流式数据。'); }
-    if (payload?.error) throw new Error(`模型接口流式返回错误：${payload.error.message || '未知错误。'}`);
+    if (payload?.error) throw new Error(`模型接口流式返回错误：${safeDetail(payload.error.message, apiKey) || '未知错误。'}`);
+    if (payload?.choices?.[0]?.finish_reason === 'length') throw new Error('模型回答达到长度上限，请调整请求后重试。');
     const delta = payload?.choices?.[0]?.delta?.content;
     if (typeof delta !== 'string' || !delta) return;
     answer += delta;
@@ -198,7 +209,7 @@ async function consumeEvents(response, emit, resetIdle) {
       }
     }
   } finally {
-    if (finished) reader.cancel().catch(() => {});
+    reader.cancel().catch(() => {});
     reader.releaseLock();
   }
   if (!finished) throw new Error('模型输出中途断开，请重试。');
@@ -216,7 +227,7 @@ async function analyze(prompt, sender, emit, controller, resetIdle) {
   const baseUrl = allowedBaseUrl(settings.baseUrl || DEFAULTS.baseUrl);
   const apiKey = String(settings.apiKey || '').trim();
   const model = String(settings.model || DEFAULTS.model).trim();
-  const reasoningEffort = String(settings.reasoningEffort ?? 'low').trim();
+  const reasoningEffort = String(settings.reasoningEffort ?? '').trim();
   if (!baseUrl || !model) throw new Error('接口设置无效，请打开插件设置检查。');
   if (!apiKey) throw new Error('请先在插件设置中填写 API Key。');
   const apiUrl = new URL(baseUrl);
@@ -248,10 +259,10 @@ async function analyze(prompt, sender, emit, controller, resetIdle) {
   let response = await request(true);
   if (!response.ok) {
     const detail = await errorDetail(response);
-    if (!rejectsStreaming(response.status, detail)) throw httpError(response.status);
+    if (!rejectsStreaming(response.status, detail)) throw httpError(response.status, detail, apiKey);
     response = await request(false);
   }
-  if (!response.ok) throw httpError(response.status);
+  if (!response.ok) throw httpError(response.status, await errorDetail(response), apiKey);
   resetIdle();
   if (!response.headers.get('content-type')?.toLowerCase().includes('text/event-stream')) {
     let payload;
@@ -260,12 +271,59 @@ async function analyze(prompt, sender, emit, controller, resetIdle) {
       if (error?.name === 'AbortError') throw error;
       throw new Error('模型接口返回的不是有效 JSON。');
     }
+    if (payload?.choices?.[0]?.finish_reason === 'length') throw new Error('模型回答达到长度上限，请调整请求后重试。');
     const answer = answerFromJson(payload);
     emit(answer);
     return answer;
   } else {
-    return consumeEvents(response, emit, resetIdle);
+    return consumeEvents(response, emit, resetIdle, apiKey);
   }
+}
+
+async function testConnection(message, sender) {
+  if (sender?.id !== chrome.runtime.id || sender.url !== chrome.runtime.getURL('src/options.html')) {
+    throw new Error('只能从插件设置页测试连接。');
+  }
+  const settings = message.settings || {};
+  const baseUrl = allowedBaseUrl(settings.baseUrl);
+  const apiKey = String(settings.apiKey || '').trim();
+  const model = String(settings.model || '').trim();
+  const reasoningEffort = String(settings.reasoningEffort || '').trim();
+  if (!baseUrl || !apiKey || !model) throw new Error('请填写有效的地址、API Key 和模型名称。');
+  const apiUrl = new URL(baseUrl);
+  const origin = `${apiUrl.protocol}//${apiUrl.hostname}/*`;
+  if (!await chrome.permissions.contains({ origins: [origin] })) throw new Error('尚未授权访问模型接口。');
+  const controller = new AbortController();
+  let timedOut = false;
+  let timer;
+  const deadline = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+      reject(new Error('测试连接超时，请稍后重试。'));
+    }, 15000);
+  });
+  try {
+    return await Promise.race([(async () => {
+      const response = await fetch(`${baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+        body: JSON.stringify({ model, messages: [{ role: 'user', content: '请回复：连接正常' }], stream: false,
+          ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}) }),
+        signal: controller.signal
+      });
+      if (!response.ok) throw httpError(response.status, await errorDetail(response), apiKey);
+      let payload;
+      try { payload = await response.json(); }
+      catch { throw new Error('模型接口返回的不是有效 JSON。'); }
+      if (payload?.choices?.[0]?.finish_reason === 'length') throw new Error('模型回答达到长度上限。');
+      answerFromJson(payload);
+      return { ok: true };
+    })(), deadline]);
+  } catch (error) {
+    if (timedOut || error?.name === 'AbortError') throw new Error('测试连接超时，请稍后重试。');
+    throw error;
+  } finally { clearTimeout(timer); }
 }
 
 chrome.runtime.onInstalled.addListener(() => { restrictStorage().catch(console.error); });
@@ -274,8 +332,9 @@ restrictStorage().catch(console.error);
 chrome.action.onClicked.addListener(tab => { openOptionsPopup(tab?.windowId).catch(console.error); });
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (!['OPEN_OPTIONS', 'GET_CACHED_RESULT'].includes(message?.type)) return false;
+  if (!['OPEN_OPTIONS', 'GET_CACHED_RESULT', 'TEST_CONNECTION'].includes(message?.type)) return false;
   (async () => {
+    if (message.type === 'TEST_CONNECTION') return testConnection(message, sender);
     validateSender(sender);
     if (message.type === 'OPEN_OPTIONS') {
       await openOptionsPopup(sender.tab?.windowId);

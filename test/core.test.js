@@ -193,7 +193,8 @@ test('隐藏的 WA 弹窗提取标准答案与用户输出，忽略编译警告�
 
 test('多行 Judge 和 Team 输出分别归属标准答案与用户输出', () => {
   const report = core.extractSubmission(page({ cases: caseHtml(1, '答案错误', 'Wrong answer on line 2<br>Judge: 1<br>2<br>Team: 1<br>3') }), direct);
-  assert.deepEqual(report.cases[0].diff, { expected: '1\n2', actual: '1\n3', detail: 'Wrong answer on line 2' });
+  assert.deepEqual(report.cases[0].diff, { expected: '1\n2', actual: '1\n3', detail: 'Wrong answer on line 2',
+    expectedPresent: true, actualPresent: true });
   const prompt = core.buildPrompt(report);
   assert.match(prompt, /对比说明：Wrong answer on line 2/);
   assert.match(prompt, /标准答案：1\n2\n用户输出：1\n3/);
@@ -217,7 +218,8 @@ test('Judge 和 Team 分别缺失时，不产生空白答案项', () => {
 });
 
 test('兼容 jury/him 标记并跳过全 AC 提交', () => {
-  assert.deepEqual(core.parseDiff('jury: 9\nhim: 7'), { expected: '9', actual: '7', detail: '' });
+  assert.deepEqual(core.parseDiff('jury: 9\nhim: 7'), { expected: '9', actual: '7', detail: '',
+    expectedPresent: true, actualPresent: true });
   const doc = page({ cases: caseHtml(1, '答案正确') + caseHtml(2, '答案正确') });
   const report = core.extractSubmission(doc, direct);
   assert.equal(report.status, 'AC');
@@ -229,7 +231,7 @@ test('CE 只包含实际编译错误，未完成的结果不会发起分析', ()
   assert.equal(ce.status, 'CE');
   assert.match(core.buildPrompt(ce), /expected expression/);
   const pending = core.extractSubmission(page({ compileLabel: '编译警告', compileText: 'warning: unused variable' }), direct);
-  assert.equal(pending.status, 'PENDING');
+  assert.equal(pending.status, 'UNKNOWN');
   assert.equal(core.buildPrompt(pending), null);
 });
 
@@ -246,6 +248,35 @@ test('编译出错优先于仍在等待的测试点', () => {
     cases: caseHtml(1, '等待评测') }), direct);
   assert.equal(rawOnly.status, 'CE');
   assert.match(rawOnly.compile.errors, /missing header/);
+});
+
+test('嵌套标签中的最终结果优先于占位状态，未知状态不当作等待', () => {
+  const nested = caseHtml(1, '<span>Wrong Answer</span>') + caseHtml(2, '等待评测');
+  const report = core.extractSubmission(page({ cases: nested }), direct);
+  assert.equal(report.status, 'WA');
+  assert.equal(report.cases[0].status, 'WA');
+  const compiled = core.extractSubmission(page({ compileLabel: '编译错误',
+    compileText: 'main.cpp:1: error: failed', cases: nested }), direct);
+  assert.equal(compiled.status, 'CE');
+  assert.equal(core.extractSubmission(page({ cases: caseHtml(1, '等待评测') }), direct).status, 'PENDING');
+  const unknown = core.extractSubmission(page({ cases: caseHtml(1, '神秘状态') }), direct);
+  assert.equal(unknown.status, 'UNKNOWN');
+  assert.equal(core.buildPrompt(unknown), null);
+});
+
+test('标准答案和实际输出保留尾部空格、换行及空输出', () => {
+  const report = core.extractSubmission(page({ cases: caseHtml(1, '答案错误',
+    'Judge: 42 <br>Team: 42') }), direct);
+  assert.equal(report.cases[0].diff.expected, '42 ');
+  assert.equal(report.cases[0].diff.actual, '42');
+  assert.match(core.buildPrompt(report), /标准答案：42␠/);
+  const multiline = core.parseDiff('Judge: a\n\nTeam:');
+  assert.equal(multiline.expected, 'a\n');
+  assert.equal(multiline.actual, '');
+  assert.equal(multiline.actualPresent, true);
+  assert.match(core.buildPrompt({ status: 'WA', source: 'x', compile: { errors: '' }, cases: [
+    { index: 1, heading: '答案错误', status: 'WA', input: '', error: '', system: '', diff: multiline }
+  ] }), /用户输出：/);
 });
 
 test('RE、TLE、MLE 筛选诊断字段，并识别混合状态', () => {
