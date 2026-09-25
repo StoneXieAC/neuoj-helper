@@ -5,6 +5,8 @@ const vm = require('node:vm');
 const path = require('node:path');
 const { JSDOM } = require('jsdom');
 const markdownit = require('markdown-it');
+const katex = require('katex');
+const texmath = require('markdown-it-texmath');
 const core = require('../extension/src/core.js');
 
 const script = fs.readFileSync(path.join(__dirname, '../extension/src/content.js'), 'utf8');
@@ -40,6 +42,7 @@ function setup(status, optionsResponse = { ok: true }, fetchProblem = async () =
   };
   const chrome = { runtime: {
     lastError: null,
+    getURL(file) { return `chrome-extension://neuoj-helper/${file}`; },
     connect() { return port; },
     sendMessage(message, callback) {
       if (message.type === 'GET_CACHED_RESULT') {
@@ -52,7 +55,7 @@ function setup(status, optionsResponse = { ok: true }, fetchProblem = async () =
       callback(optionsResponse);
     }
   } };
-  const context = { globalThis: { NEUOJCore: core, markdownit }, location: dom.window.location,
+  const context = { globalThis: { NEUOJCore: core, markdownit, katex, texmath }, location: dom.window.location,
     document: dom.window.document, chrome, MutationObserver: dom.window.MutationObserver,
     DOMParser: dom.window.DOMParser, fetch: (...args) => { fetchCount++; return fetchProblem(...args); }, URL, btoa,
     setTimeout: timers?.setTimeout || setTimeout, clearTimeout: timers?.clearTimeout || clearTimeout,
@@ -352,7 +355,7 @@ test('原始 HTML、危险链接和图片不会进入分析结果 DOM', async ()
   const shadow = app.document.getElementById('neuoj-helper-root').shadowRoot;
   shadow.querySelector('button').click();
   await flush();
-  app.emit({ type: 'DELTA', text: '<img src=x onerror=alert(1)> [危险](javascript:alert(1)) ![图片](https://example.com/a.png) [安全](https://example.com)' });
+  app.emit({ type: 'DELTA', text: '<img src=x onerror=alert(1)> [危险](javascript:alert(1)) ![图片](https://example.com/a.png) [安全](https://example.com) $\\href{javascript:alert(1)}{危险}$ $\\includegraphics{https://example.com/a.png}$' });
   app.emit({ type: 'DONE' });
   const result = shadow.querySelector('.result');
   assert.equal(result.querySelector('img'), null);
@@ -360,9 +363,48 @@ test('原始 HTML、危险链接和图片不会进入分析结果 DOM', async ()
   assert.equal(result.querySelector('a[href^="javascript:"]'), null);
   assert.match(result.textContent, /<img src=x/);
   const safe = result.querySelector('a');
+  assert.equal(result.querySelectorAll('a').length, 1);
   assert.equal(safe.getAttribute('href'), 'https://example.com');
   assert.equal(safe.getAttribute('target'), '_blank');
   assert.equal(safe.getAttribute('rel'), 'noopener noreferrer');
+});
+
+test('流式结果渲染四种公式，代码块保持原样，样式从扩展本地加载', async () => {
+  const app = setup('答案错误');
+  const shadow = app.document.getElementById('neuoj-helper-root').shadowRoot;
+  const stylesheets = [...shadow.querySelectorAll('link[rel="stylesheet"]')].map(link => link.href);
+  assert.deepEqual(stylesheets, [
+    'chrome-extension://neuoj-helper/vendor/katex/katex.min.css',
+    'chrome-extension://neuoj-helper/vendor/texmath/texmath.css'
+  ]);
+  shadow.querySelector('button').click();
+  await flush();
+  app.emit({ type: 'DELTA', text: '组合数 $\\bin' });
+  await new Promise(resolve => setTimeout(resolve, 5));
+  assert.equal(shadow.querySelector('.result .katex'), null);
+  app.emit({ type: 'DELTA', text: 'om{n+m-1}{m}$，另有 \\(x^2\\)。\n\n$$\\frac{a}{b}$$\n\n\\[\\sum_{i=1}^{n}i\\]\n\n`$raw$`\n\n```text\n\\(raw\\)\n```' });
+  app.emit({ type: 'DONE' });
+  const result = shadow.querySelector('.result');
+  const formulas = [...result.querySelectorAll('.katex-mathml annotation')].map(node => node.textContent);
+  assert.deepEqual(formulas, ['\\binom{n+m-1}{m}', 'x^2', '\\frac{a}{b}', '\\sum_{i=1}^{n}i']);
+  assert.equal(result.querySelectorAll('.katex-display').length, 2);
+  assert.equal(result.querySelector('p code').textContent, '$raw$');
+  assert.match(result.querySelector('pre code').textContent, /\\\(raw\\\)/);
+});
+
+test('缓存中的公式重新进入页面后仍被渲染，无效公式不妨碍后续内容', () => {
+  const app = setup('答案错误', { ok: true }, undefined, url, problemUrl,
+    '正确：$x^2$。无效：$\\notacommand$。结尾：**保留**');
+  const result = app.document.getElementById('neuoj-helper-root').shadowRoot.querySelector('.result');
+  assert.equal(result.querySelector('.katex-mathml annotation').textContent, 'x^2');
+  assert.match(result.textContent, /\\notacommand/);
+  assert.equal(result.querySelector('strong').textContent, '保留');
+});
+
+test('直连提交页也渲染已缓存的公式', () => {
+  const app = setup('答案错误', { ok: true }, undefined, directGeneralUrl, directGeneralProblemUrl, '$\\binom{n}{m}$');
+  const result = app.document.getElementById('neuoj-helper-root').shadowRoot.querySelector('.result');
+  assert.equal(result.querySelector('.katex-mathml annotation').textContent, '\\binom{n}{m}');
 });
 
 test('流中断时保留已有结果并提示错误', async () => {

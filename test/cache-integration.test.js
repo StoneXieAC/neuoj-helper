@@ -5,6 +5,8 @@ const path = require('node:path');
 const vm = require('node:vm');
 const { JSDOM } = require('jsdom');
 const markdownit = require('markdown-it');
+const katex = require('katex');
+const texmath = require('markdown-it-texmath');
 const core = require('../extension/src/core.js');
 
 const backgroundScript = fs.readFileSync(path.join(__dirname, '../extension/src/background.js'), 'utf8');
@@ -30,7 +32,7 @@ function startBackground(local) {
   };
   const fetch = async url => url.startsWith('chrome-extension:')
     ? new Response('系统提示词')
-    : new Response(JSON.stringify({ choices: [{ message: { content: '**缓存结论**' } }] }),
+    : new Response(JSON.stringify({ choices: [{ message: { content: '**缓存结论** $x^2$' } }] }),
       { headers: { 'content-type': 'application/json' } });
   vm.runInNewContext(backgroundScript, { chrome, fetch, URL, AbortController, TextDecoder,
     setTimeout, clearTimeout, console });
@@ -67,6 +69,7 @@ function openPage(background, url) {
   let modelRequests = 0;
   const chrome = { runtime: {
     lastError: null,
+    getURL(file) { return `chrome-extension://test/${file}`; },
     sendMessage(message, callback) {
       if (message.type !== 'GET_CACHED_RESULT') throw new Error('意外消息');
       cacheRequests++;
@@ -75,7 +78,7 @@ function openPage(background, url) {
     connect() { modelRequests++; throw new Error('不应自动分析'); }
   } };
   vm.runInNewContext(contentScript, {
-    globalThis: { NEUOJCore: core, markdownit }, location: dom.window.location,
+    globalThis: { NEUOJCore: core, markdownit, katex, texmath }, location: dom.window.location,
     document: dom.window.document, chrome, MutationObserver: dom.window.MutationObserver,
     DOMParser: dom.window.DOMParser, URL, setTimeout, setInterval, clearInterval,
     requestAnimationFrame: fn => setTimeout(fn, 0), cancelAnimationFrame: clearTimeout,
@@ -92,13 +95,14 @@ test('WebVPN 成功分析后重建后台和页面仍恢复本机缓存', async (
   const local = { baseUrl: 'http://localhost:8765/v1', apiKey: 'test-secret', model: 'custom-model' };
   const firstBackground = startBackground(local);
   assert.equal((await firstBackground.analyze(pageUrl)).type, 'DONE');
-  assert.equal(local.analysisResults[0].answer, '**缓存结论**');
+  assert.equal(local.analysisResults[0].answer, '**缓存结论** $x^2$');
 
   const reloadedBackground = startBackground(local);
   const reloadedPage = openPage(reloadedBackground, `${pageUrl}#tabs-testcase-judging`);
   await new Promise(resolve => setImmediate(resolve));
   const shadow = reloadedPage.document.getElementById('neuoj-helper-root').shadowRoot;
   assert.equal(shadow.querySelector('.result strong').textContent, '缓存结论');
+  assert.equal(shadow.querySelector('.result .katex-mathml annotation').textContent, 'x^2');
   assert.equal(shadow.querySelector('.status').textContent, '已恢复上次分析');
   assert.equal(reloadedPage.cacheRequests, 1);
   assert.equal(reloadedPage.modelRequests, 0);

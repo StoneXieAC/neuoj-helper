@@ -76,6 +76,13 @@
     return images;
   }
   const markdown = globalThis.markdownit({ html: false, linkify: false, breaks: true });
+  if (globalThis.texmath && globalThis.katex) {
+    markdown.use(globalThis.texmath, {
+      engine: globalThis.katex,
+      delimiters: ['dollars', 'brackets'],
+      katexOptions: { trust: false, throwOnError: false, strict: 'ignore', maxSize: 10, maxExpand: 1000 }
+    });
+  }
   markdown.renderer.rules.image = (tokens, index) => markdown.utils.escapeHtml(tokens[index].content);
   const validateLink = markdown.validateLink.bind(markdown);
   markdown.validateLink = url => validateLink(url) && /^https?:\/\//i.test(url);
@@ -94,6 +101,12 @@
     const host = document.createElement('div');
     host.id = 'neuoj-helper-root';
     const shadow = host.attachShadow({ mode: 'open' });
+    for (const file of ['vendor/katex/katex.min.css', 'vendor/texmath/texmath.css']) {
+      const stylesheet = document.createElement('link');
+      stylesheet.rel = 'stylesheet';
+      stylesheet.href = chrome.runtime.getURL(file);
+      shadow.append(stylesheet);
+    }
     const style = document.createElement('style');
     style.textContent = `
       :host { display:block; margin:16px 0; color:#213047; font:14px/1.6 system-ui,-apple-system,sans-serif; }
