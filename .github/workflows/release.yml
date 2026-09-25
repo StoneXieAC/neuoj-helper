@@ -1,0 +1,60 @@
+name: 测试与打包
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: 检查版本标签
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          expected="v$(node -p "require('./extension/manifest.json').version")"
+          if [ "$GITHUB_REF_NAME" != "$expected" ]; then
+            echo "版本标签 $GITHUB_REF_NAME 与扩展版本 $expected 不一致" >&2
+            exit 1
+          fi
+      - run: npm ci
+      - run: npm test
+      - run: npm run build:releases
+      - name: 检查发行包
+        run: |
+          version="$(node -p "require('./extension/manifest.json').version")"
+          for browser in chromium firefox; do
+            archive="dist/releases/neuoj-helper-${version}-${browser}.zip"
+            test -f "$archive"
+            unzip -tq "$archive"
+          done
+      - name: 保存发行包
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-packages
+          path: dist/releases/*.zip
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-packages
+          path: dist/releases
+      - name: 发布 GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/releases/*.zip --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes
