@@ -41,14 +41,26 @@ async function restrictStorage() {
 function submissionKey(raw) {
   validateSender({ url: raw });
   const url = new URL(raw);
-  return `${url.origin}${url.pathname.replace(/\/$/, '')}`;
+  let path = url.pathname.replace(/\/$/, '');
+  if (url.hostname === 'webvpn.neu.edu.cn') {
+    path = path.replace(/^\/(?:https|http)\/[^/]+(?=\/)/, '');
+    return `webvpn:${path}`;
+  }
+  return `${url.origin}${path}`;
 }
 
 async function cachedResult(raw) {
   const key = submissionKey(raw);
   const saved = await chrome.storage.local.get(RESULTS_KEY);
-  const entry = saved[RESULTS_KEY]?.find(item => item.url === key);
+  const entries = Array.isArray(saved[RESULTS_KEY]) ? saved[RESULTS_KEY] : [];
+  const entry = entries.find(item => cacheEntryKey(item) === key);
   return typeof entry?.answer === 'string' && entry.answer.trim() ? entry.answer : null;
+}
+
+function cacheEntryKey(item) {
+  if (typeof item?.url !== 'string') return null;
+  try { return item.url.startsWith('webvpn:') ? item.url : submissionKey(item.url); }
+  catch { return null; }
 }
 
 function saveResult(raw, answer) {
@@ -57,7 +69,7 @@ function saveResult(raw, answer) {
     const saved = await chrome.storage.local.get(RESULTS_KEY);
     const entries = Array.isArray(saved[RESULTS_KEY]) ? saved[RESULTS_KEY] : [];
     await chrome.storage.local.set({ [RESULTS_KEY]: [{ url: key, answer },
-      ...entries.filter(item => item.url !== key)].slice(0, MAX_RESULTS) });
+      ...entries.filter(item => cacheEntryKey(item) !== key)].slice(0, MAX_RESULTS) });
   });
   return cacheWrite;
 }
@@ -292,8 +304,13 @@ chrome.runtime.onConnect.addListener(port => {
     analyze(message.prompt, port.sender, text => post({ type: 'DELTA', text }), controller, timeout.resetIdle)
       .then(async answer => {
         if (!disconnected) {
-          try { await saveResult(port.sender.url, answer); } catch (error) { console.error(error); }
-          post({ type: 'DONE' });
+          try {
+            await saveResult(port.sender.url, answer);
+            post({ type: 'DONE' });
+          } catch (error) {
+            console.error(error);
+            post({ type: 'ERROR', error: '分析已完成，但缓存保存失败。刷新后可能无法恢复，请重试。' });
+          }
         }
       }, error => {
         if (disconnected) return;

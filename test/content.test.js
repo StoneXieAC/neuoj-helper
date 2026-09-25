@@ -26,6 +26,7 @@ function setup(status, optionsResponse = { ok: true }, fetchProblem = async () =
     <div id="show_output_error0"><div class="modal-body"></div></div></div></div></div></div></body></html>`, { url: pageUrl });
   let sent;
   let fetchCount = 0;
+  let cacheRequests = 0;
   let receive;
   let disconnected;
   const port = {
@@ -38,7 +39,12 @@ function setup(status, optionsResponse = { ok: true }, fetchProblem = async () =
     lastError: null,
     connect() { return port; },
     sendMessage(message, callback) {
-      if (message.type === 'GET_CACHED_RESULT') { callback({ ok: true, answer: cachedAnswer }); return; }
+      if (message.type === 'GET_CACHED_RESULT') {
+        cacheRequests++;
+        if (typeof cachedAnswer === 'function') cachedAnswer(callback);
+        else callback({ ok: true, answer: cachedAnswer });
+        return;
+      }
       sent = message;
       callback(optionsResponse);
     }
@@ -53,6 +59,7 @@ function setup(status, optionsResponse = { ok: true }, fetchProblem = async () =
     document: dom.window.document,
     get sent() { return sent; },
     get fetchCount() { return fetchCount; },
+    get cacheRequests() { return cacheRequests; },
     emit(message) { receive(message); },
     disconnect() { disconnected(); }
   };
@@ -115,6 +122,59 @@ test('再次进入同一提交时直接恢复缓存，重新分析仍由用户�
   assert.equal(app.sent.type, 'ANALYZE');
   assert.equal(app.document.defaultView.location.href, url);
   app.emit({ type: 'DONE' });
+});
+
+test('刷新时先显示评测中，结果转为失败后恢复缓存且不请求模型', async () => {
+  const app = setup('评测中', { ok: true }, undefined, url, problemUrl, '**缓存结论**');
+  const shadow = app.document.getElementById('neuoj-helper-root').shadowRoot;
+  assert.equal(app.cacheRequests, 0);
+  app.document.querySelector('#tabs-testcase-judging .card-body > div').textContent = '#001 答案错误';
+  await flush();
+  assert.equal(app.cacheRequests, 1);
+  assert.equal(shadow.querySelector('.result strong').textContent, '缓存结论');
+  assert.equal(shadow.querySelector('.status').textContent, '已恢复上次分析');
+  assert.equal(app.fetchCount, 0);
+  assert.equal(app.sent, undefined);
+});
+
+test('延迟返回的缓存不能覆盖用户重新分析或更新后的评测状态', async () => {
+  const callbacks = [];
+  const app = setup('答案错误', { ok: true }, undefined, url, problemUrl,
+    callback => callbacks.push(callback));
+  const shadow = app.document.getElementById('neuoj-helper-root').shadowRoot;
+  assert.equal(callbacks.length, 1);
+  shadow.querySelector('button').click();
+  callbacks[0]({ ok: true, answer: '过期缓存' });
+  assert.equal(shadow.querySelector('.result').hidden, true);
+  await flush();
+  app.emit({ type: 'DELTA', text: '新分析' });
+  app.emit({ type: 'DONE' });
+  assert.equal(shadow.querySelector('.result').textContent.trim(), '新分析');
+
+  const pending = setup('答案错误', { ok: true }, undefined, url, problemUrl,
+    callback => callbacks.push(callback));
+  pending.document.querySelector('#tabs-testcase-judging .card-body > div').textContent = '#001 答案正确';
+  await flush();
+  callbacks[1]({ ok: true, answer: '过期缓存' });
+  const pendingShadow = pending.document.getElementById('neuoj-helper-root').shadowRoot;
+  assert.equal(pendingShadow.querySelector('.result').hidden, true);
+  assert.equal(pendingShadow.querySelector('.status').textContent, '恭喜，成功 AC 这道题');
+});
+
+test('评测状态短暂变化后仅接受最新一次缓存读取', async () => {
+  const callbacks = [];
+  const app = setup('答案错误', { ok: true }, undefined, url, problemUrl,
+    callback => callbacks.push(callback));
+  const heading = app.document.querySelector('#tabs-testcase-judging .card-body > div');
+  heading.textContent = '#001 评测中';
+  await flush();
+  heading.textContent = '#001 答案错误';
+  await flush();
+  assert.equal(callbacks.length, 2);
+  callbacks[0]({ ok: true, answer: '旧回调' });
+  callbacks[1]({ ok: true, answer: '最新缓存' });
+  const shadow = app.document.getElementById('neuoj-helper-root').shadowRoot;
+  assert.equal(shadow.querySelector('.result').textContent.trim(), '最新缓存');
 });
 
 test('失败状态直接显示具体原因，重试时清空旧结果并恢复加载状态', async () => {

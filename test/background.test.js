@@ -13,7 +13,7 @@ const jsonResponse = (payload, status = 200) => new Response(JSON.stringify(payl
 const sseResponse = stream => new Response(stream, { headers: { 'content-type': 'text/event-stream' } });
 const bytes = text => new TextEncoder().encode(text);
 
-function setup({ granted = true, apiKey = 'test-secret', reasoningEffort, customPrompt, respond = () => jsonResponse({ choices: [{ message: { content: '分析结果' } }] }), timeout = false } = {}) {
+function setup({ granted = true, apiKey = 'test-secret', reasoningEffort, customPrompt, respond = () => jsonResponse({ choices: [{ message: { content: '分析结果' } }] }), timeout = false, localStore, failResultWrite = false } = {}) {
   let messageListener;
   let connectListener;
   let actionClicked;
@@ -22,9 +22,10 @@ function setup({ granted = true, apiKey = 'test-secret', reasoningEffort, custom
   let popupOptions;
   const windows = new Map();
   const session = {};
-  const local = { baseUrl: 'http://localhost:8765/v1', apiKey, model: 'custom-model', reasoningEffort, systemPrompt: customPrompt };
+  const local = localStore || { baseUrl: 'http://localhost:8765/v1', apiKey, model: 'custom-model', reasoningEffort, systemPrompt: customPrompt };
   let permissionRequest;
   const requests = [];
+  const loggedErrors = [];
   const chrome = {
     runtime: {
       onInstalled: { addListener() {} }, onStartup: { addListener() {} },
@@ -45,7 +46,10 @@ function setup({ granted = true, apiKey = 'test-secret', reasoningEffort, custom
       async update(id, options) { if (!windows.has(id)) throw Error('window closed'); if (options.focused) optionsFocused++; return windows.get(id); }
     },
     storage: {
-      local: { async setAccessLevel() {}, async get() { return local; }, async set(value) { Object.assign(local, value); } },
+      local: { async setAccessLevel() {}, async get() { return local; }, async set(value) {
+        if (failResultWrite && Object.hasOwn(value, 'analysisResults')) throw new Error('存储写入失败');
+        Object.assign(local, value);
+      } },
       session: {
         async get(key) { return { [key]: session[key] }; },
         async set(value) { Object.assign(session, value); },
@@ -59,7 +63,8 @@ function setup({ granted = true, apiKey = 'test-secret', reasoningEffort, custom
     requests.push({ url, options });
     return respond(url, options, requests.length);
   };
-  const context = { chrome, fetch, URL, AbortController, TextDecoder, console,
+  const context = { chrome, fetch, URL, AbortController, TextDecoder,
+    console: { error(error) { loggedErrors.push(error); } },
     setTimeout: timeout ? callback => { queueMicrotask(callback); return 1; } : setTimeout,
     clearTimeout: timeout ? () => {} : clearTimeout };
   vm.runInNewContext(script, context);
@@ -95,7 +100,8 @@ function setup({ granted = true, apiKey = 'test-secret', reasoningEffort, custom
     get optionsOpened() { return optionsOpened; },
     get optionsFocused() { return optionsFocused; },
     get popupOptions() { return popupOptions; },
-    get local() { return local; }
+    get local() { return local; },
+    get loggedErrors() { return loggedErrors; }
   };
 }
 
@@ -282,9 +288,37 @@ test('完成后按提交地址缓存，忽略锚点并隔离直连、WebVPN 和�
   assert.equal((await app.getCached(vpn)).answer, null);
   assert.equal((await app.open(undefined, vpn).done).type, 'DONE');
   assert.equal((await app.getCached({ url: sender.url + '?tab=1' })).answer, '分析结果');
+  assert.equal((await app.getCached({ url: sender.url.replace('opaque-id', 'rotated-id') })).answer, '分析结果');
   assert.equal((await app.getCached({ url: 'https://oj.neu.edu.cn/training/8/submission/1716135' })).answer, null);
   assert.equal((await app.getCached({ url: sender.url.replace('1716135', '1716136') })).answer, null);
   assert.equal((await app.getCached({ url: 'https://evil.example/submissions/1' })).ok, false);
+});
+
+test('刷新重建后台后仍从共享本机存储读取缓存，并兼容旧 WebVPN 地址键', async () => {
+  const localStore = { baseUrl: 'http://localhost:8765/v1', apiKey: 'test-secret', model: 'custom-model' };
+  const first = setup({ localStore });
+  assert.equal((await first.open().done).type, 'DONE');
+  assert.equal(localStore.analysisResults[0].url, 'webvpn:/training/8/submission/1716135');
+  const reloaded = setup({ localStore });
+  assert.equal((await reloaded.getCached({ url: sender.url.replace('opaque-id', 'rotated-id') })).answer, '分析结果');
+  assert.equal(reloaded.requests.length, 0);
+
+  localStore.analysisResults = [{ url: sender.url, answer: '旧版结果' }];
+  assert.equal((await reloaded.getCached({ url: sender.url.replace('opaque-id', 'rotated-id') })).answer, '旧版结果');
+  assert.equal((await reloaded.open().done).type, 'DONE');
+  assert.equal(localStore.analysisResults.length, 1);
+  assert.equal(localStore.analysisResults[0].url, 'webvpn:/training/8/submission/1716135');
+});
+
+test('缓存写入失败时保留已生成文字并报告错误，不发送完成事件', async () => {
+  const app = setup({ failResultWrite: true });
+  const run = app.open();
+  assert.equal((await run.done).type, 'ERROR');
+  assert.ok(run.events.some(event => event.type === 'DELTA' && event.text === '分析结果'));
+  assert.equal(run.events.some(event => event.type === 'DONE'), false);
+  assert.match(run.events.at(-1).error, /缓存保存失败/);
+  assert.equal((await app.getCached()).answer, null);
+  assert.equal(app.loggedErrors.length, 1);
 });
 
 test('失败分析保留旧缓存，新成功结果覆盖，并只保留最近十个提交', async () => {

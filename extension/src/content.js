@@ -110,6 +110,19 @@
     let analysisStarted = false;
     let verdictStatus = report.status;
     let verdictVersion = 0;
+    function restoreCachedResult() {
+      if (analysisStarted || verdictStatus === 'AC' || verdictStatus === 'PENDING') return;
+      const currentVersion = verdictVersion;
+      chrome.runtime.sendMessage({ type: 'GET_CACHED_RESULT' }, response => {
+        if (analysisStarted || currentVersion !== verdictVersion ||
+          verdictStatus === 'AC' || verdictStatus === 'PENDING' || chrome.runtime.lastError ||
+          !response?.ok || typeof response.answer !== 'string' || !response.answer.trim()) return;
+        answer = response.answer;
+        render();
+        button.textContent = '重新分析';
+        setStatus('success', '已恢复上次分析');
+      });
+    }
     function render() {
       scheduledFrame = null;
       try { result.innerHTML = markdown.render(answer); }
@@ -156,6 +169,7 @@
       } else {
         button.disabled = false;
         setStatus('idle');
+        restoreCachedResult();
       }
     }
     if (report.status === 'AC') {
@@ -240,16 +254,7 @@
         verdictObserver.observe(document.getElementById(id), { childList: true, subtree: true, characterData: true });
       }
     }
-    if (mounted && report.status !== 'PENDING' && report.status !== 'AC') {
-      chrome.runtime.sendMessage({ type: 'GET_CACHED_RESULT' }, response => {
-        if (analysisStarted || verdictStatus === 'AC' || verdictStatus === 'PENDING' ||
-          !response?.ok || typeof response.answer !== 'string' || !response.answer.trim()) return;
-        answer = response.answer;
-        render();
-        button.textContent = '重新分析';
-        setStatus('success', '已恢复上次分析');
-      });
-    }
+    if (mounted) restoreCachedResult();
     return mounted;
   }
 
