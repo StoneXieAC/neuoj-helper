@@ -14,26 +14,10 @@
   let mounted = false;
   let observer;
 
-  function watchAccepted() {
-    const acObserver = new MutationObserver(() => {
-      const latest = core.extractSubmission(document, location.href);
-      if (!latest || latest.status === 'AC' || latest.status === 'PENDING') return;
-      acObserver.disconnect();
-      mounted = false;
-      mount();
-    });
-    acObserver.observe(document.getElementById('tabs-testcase-judging'), { childList: true, subtree: true, characterData: true });
-  }
-
   function mount() {
     if (mounted || !core.isSubmissionPage(document, location.href)) return false;
     const report = core.extractSubmission(document, location.href);
     if (!report) return false;
-    if (report.status === 'AC') {
-      mounted = true;
-      watchAccepted();
-      return true;
-    }
     const host = document.createElement('div');
     host.id = 'neuoj-helper-root';
     const shadow = host.attachShadow({ mode: 'open' });
@@ -51,15 +35,15 @@
       .settings:hover:not(:disabled) { border-color:#b9c7d9; background:#f1f5f9; color:#334155; }
       .settings svg { width:16px; height:16px; }
       .status[hidden] { display:none; }
-      .status { display:inline-flex; align-items:center; gap:5px; min-width:0; max-width:100%; color:#64748b; font:500 12px/1.4 system-ui,-apple-system,sans-serif; overflow-wrap:anywhere; }
+      .status { display:inline-flex; align-items:center; gap:5px; min-width:0; max-width:100%; color:#64748b; font:500 12px/20px system-ui,-apple-system,sans-serif; overflow-wrap:anywhere; }
       .status[data-state="success"] { color:#15803d; }
       .status[data-state="error"] { color:#b42318; }
-      .status-icon { display:inline-grid; place-items:center; flex:0 0 14px; width:14px; height:14px; font-weight:700; }
+      .status-icon { display:grid; place-items:center; flex:0 0 16px; width:16px; height:16px; font:700 15px/1 system-ui,-apple-system,sans-serif; }
+      .status-text { display:block; line-height:20px; }
       .status[data-state="waiting"] .status-icon::before { content:'·'; font-size:18px; }
       .status[data-state="loading"] .status-icon { box-sizing:border-box; border:2px solid currentColor; border-top-color:transparent; border-radius:50%; animation:status-spin .8s linear infinite; }
-      .status[data-state="success"] .status-icon::before { content:'✓'; font-size:15px; }
-      .status[data-state="error"] .status-icon { border:1.5px solid currentColor; border-radius:50%; }
-      .status[data-state="error"] .status-icon::before { content:'!'; font-size:10px; }
+      .status[data-state="success"] .status-icon::before { content:'✓'; }
+      .status[data-state="error"] .status-icon::before { content:'×'; }
       @keyframes status-spin { to { transform:rotate(360deg); } }
       @media (prefers-reduced-motion:reduce) { .status[data-state="loading"] .status-icon { animation:none; } }
       .result { margin:12px 0 0; border-top:1px solid #e2e8f0; padding-top:12px; overflow-wrap:anywhere; user-select:text; }
@@ -124,6 +108,8 @@
     let scheduledFrame;
     let answer = '';
     let analysisStarted = false;
+    let verdictStatus = report.status;
+    let verdictVersion = 0;
     function render() {
       scheduledFrame = null;
       try { result.innerHTML = markdown.render(answer); }
@@ -144,26 +130,51 @@
       button.textContent = '重新分析';
       setStatus(state, message);
     }
-    if (report.status === 'PENDING') {
-      button.disabled = true;
-      setStatus('waiting', '等待评测');
-      const verdictObserver = new MutationObserver(() => {
-        const latest = core.extractSubmission(document, location.href);
-        if (!latest || latest.status === 'PENDING') return;
-        verdictObserver.disconnect();
-        if (latest.status === 'AC') { host.remove(); watchAccepted(); return; }
+    function updateVerdict(nextStatus) {
+      if (nextStatus === verdictStatus) return;
+      verdictStatus = nextStatus;
+      verdictVersion++;
+      clearInterval(heartbeat);
+      heartbeat = null;
+      if (activePort) {
+        const port = activePort;
+        activePort = null;
+        port.disconnect();
+      }
+      if (scheduledFrame != null) cancelAnimationFrame(scheduledFrame);
+      scheduledFrame = null;
+      answer = '';
+      result.textContent = '';
+      result.hidden = true;
+      button.textContent = '分析错误';
+      if (nextStatus === 'AC') {
+        button.disabled = true;
+        setStatus('success', '恭喜，成功 AC 这道题');
+      } else if (nextStatus === 'PENDING') {
+        button.disabled = true;
+        setStatus('waiting', '等待评测');
+      } else {
         button.disabled = false;
         setStatus('idle');
-      });
-      verdictObserver.observe(document.getElementById('tabs-testcase-judging'), { childList: true, subtree: true, characterData: true });
-      verdictObserver.observe(document.getElementById('tabs-compile-info'), { childList: true, subtree: true, characterData: true });
+      }
+    }
+    if (report.status === 'AC') {
+      button.disabled = true;
+      setStatus('success', '恭喜，成功 AC 这道题');
+    } else if (report.status === 'PENDING') {
+      button.disabled = true;
+      setStatus('waiting', '等待评测');
     }
     button.addEventListener('click', async () => {
       const latest = core.extractSubmission(document, location.href);
       if (!latest || latest.status === 'AC' || latest.status === 'PENDING') {
+        if (latest) updateVerdict(latest.status);
+        if (latest?.status === 'AC') return;
         setStatus('error', '当前没有可分析的失败结果，请等待评测完成或刷新页面。');
         return;
       }
+      updateVerdict(latest.status);
+      const currentVersion = verdictVersion;
       analysisStarted = true;
       button.disabled = true;
       setStatus('loading', '正在获取题面…');
@@ -180,9 +191,11 @@
         problem = core.extractProblem(new DOMParser().parseFromString(await response.text(), 'text/html'));
         if (!problem) throw new Error('题面页面中未找到正文。');
       } catch (error) {
+        if (currentVersion !== verdictVersion) return;
         finish('error', `无法获取题面：${error.message || '请求失败。'}请刷新页面或重新登录后重试。`);
         return;
       }
+      if (currentVersion !== verdictVersion) return;
       const prompt = core.buildPrompt(latest, problem);
       if (!prompt) { finish('error', '无法生成分析内容，请刷新页面后重试。'); return; }
       setStatus('loading', '正在分析…');
@@ -192,6 +205,7 @@
       activePort = port;
       let completed = false;
       port.onMessage.addListener(message => {
+        if (currentVersion !== verdictVersion) return;
         if (message?.type === 'DELTA' && typeof message.text === 'string') {
           answer += message.text;
           scheduleRender();
@@ -204,7 +218,7 @@
         }
       });
       port.onDisconnect.addListener(() => {
-        if (!completed && activePort === port) finish('error', '与扩展后台的连接已中断。');
+        if (currentVersion === verdictVersion && !completed && activePort === port) finish('error', '与扩展后台的连接已中断。');
       });
       heartbeat = setInterval(() => {
         try { port.postMessage({ type: 'PING' }); } catch { /* 断线由 onDisconnect 处理。 */ }
@@ -217,9 +231,19 @@
     const target = document.getElementById('tabs-source-code')?.closest('.tab-content') || document.getElementById('tabs-source-code');
     target?.parentElement?.insertBefore(host, target);
     mounted = !!host.isConnected;
-    if (mounted && report.status !== 'PENDING') {
+    if (mounted) {
+      const verdictObserver = new MutationObserver(() => {
+        const latest = core.extractSubmission(document, location.href);
+        if (latest) updateVerdict(latest.status);
+      });
+      for (const id of ['tabs-testcase-judging', 'tabs-compile-info']) {
+        verdictObserver.observe(document.getElementById(id), { childList: true, subtree: true, characterData: true });
+      }
+    }
+    if (mounted && report.status !== 'PENDING' && report.status !== 'AC') {
       chrome.runtime.sendMessage({ type: 'GET_CACHED_RESULT' }, response => {
-        if (analysisStarted || !response?.ok || typeof response.answer !== 'string' || !response.answer.trim()) return;
+        if (analysisStarted || verdictStatus === 'AC' || verdictStatus === 'PENDING' ||
+          !response?.ok || typeof response.answer !== 'string' || !response.answer.trim()) return;
         answer = response.answer;
         render();
         button.textContent = '重新分析';

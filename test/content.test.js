@@ -96,6 +96,8 @@ test('WA 点击后才发送提示词，收到首段即显示 Markdown，完成�
   assert.equal(button.textContent, '重新分析');
   assert.equal(status.dataset.state, 'success');
   assert.equal(status.textContent, '分析完成');
+  assert.ok(status.querySelector('.status-icon[aria-hidden="true"]'));
+  assert.equal(status.querySelector('.status-text').textContent, '分析完成');
 });
 
 test('再次进入同一提交时直接恢复缓存，重新分析仍由用户点击触发', async () => {
@@ -197,12 +199,20 @@ test('题目链接缺失时不请求页面也不连接模型', () => {
   assert.match(shadow.querySelector('.status').textContent, /无法定位对应题面/);
 });
 
-test('全 AC 不插入分析面板', () => {
+test('全 AC 保留面板和成功状态，但不能分析或读取缓存', () => {
   const app = setup('答案正确');
-  assert.equal(app.document.getElementById('neuoj-helper-root'), null);
+  const shadow = app.document.getElementById('neuoj-helper-root').shadowRoot;
+  const button = shadow.querySelector('button');
+  assert.equal(button.disabled, true);
+  assert.equal(shadow.querySelector('.status').dataset.state, 'success');
+  assert.equal(shadow.querySelector('.status').textContent, '恭喜，成功 AC 这道题');
+  button.click();
+  assert.equal(app.fetchCount, 0);
+  assert.equal(app.sent, undefined);
+  assert.equal(shadow.querySelector('.result').hidden, true);
 });
 
-test('通用提交页仅在失败时显示面板并可读取题面发起分析', async () => {
+test('通用提交页失败时可分析，AC 时显示禁用面板', async () => {
   const fetchProblem = async requested => ({ ok: true, url: requested, text: async () => problemHtml });
   for (const [pageUrl, linkedProblem] of [[generalUrl, generalProblemUrl], [directGeneralUrl, directGeneralProblemUrl]]) {
     const app = setup('答案错误', { ok: true }, fetchProblem, pageUrl, linkedProblem);
@@ -216,7 +226,9 @@ test('通用提交页仅在失败时显示面板并可读取题面发起分析',
     assert.match(app.sent.prompt, /题目：求幂/);
     app.emit({ type: 'DONE' });
     const accepted = setup('答案正确', { ok: true }, fetchProblem, pageUrl, linkedProblem);
-    assert.equal(accepted.document.getElementById('neuoj-helper-root'), null);
+    const acceptedShadow = accepted.document.getElementById('neuoj-helper-root').shadowRoot;
+    assert.equal(acceptedShadow.querySelector('button').disabled, true);
+    assert.equal(acceptedShadow.querySelector('.status').textContent, '恭喜，成功 AC 这道题');
   }
 });
 
@@ -252,10 +264,23 @@ test('异步评测完成后分析按钮自动启用', async () => {
   assert.equal(status.hidden, true);
 });
 
-test('先出现 AC 测试点、后出现失败点时仍展示面板', async () => {
+test('评测中转为 AC 时保留面板并禁用分析', async () => {
+  const app = setup('评测中');
+  const host = app.document.getElementById('neuoj-helper-root');
+  app.document.querySelector('#tabs-testcase-judging .card-body > div').textContent = '#001 答案正确';
+  await flush();
+  assert.equal(app.document.getElementById('neuoj-helper-root'), host);
+  assert.equal(host.shadowRoot.querySelector('button').disabled, true);
+  assert.equal(host.shadowRoot.querySelector('.status').textContent, '恭喜，成功 AC 这道题');
+  assert.equal(app.fetchCount, 0);
+});
+
+test('先出现 AC 测试点、后出现失败点时恢复分析能力', async () => {
   const app = setup('答案正确');
-  assert.equal(app.document.getElementById('neuoj-helper-root'), null);
+  const host = app.document.getElementById('neuoj-helper-root');
   app.document.querySelector('#tabs-testcase-judging .card-body > div').textContent = '#001 答案错误';
-  await new Promise(resolve => setImmediate(resolve));
-  assert.ok(app.document.getElementById('neuoj-helper-root'));
+  await flush();
+  assert.equal(app.document.getElementById('neuoj-helper-root'), host);
+  assert.equal(host.shadowRoot.querySelector('button').disabled, false);
+  assert.equal(host.shadowRoot.querySelector('.status').hidden, true);
 });

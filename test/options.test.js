@@ -80,6 +80,38 @@ test('侧边栏按配置切换，键盘可切换分类', async () => {
   assert.equal(tabs[1].getAttribute('aria-selected'), 'true');
   tabs[0].click();
   assert.equal(doc.getElementById('api-panel').hidden, false);
+  assert.equal(doc.querySelector('h1'), null);
+  assert.equal(doc.getElementById('save').textContent, '确认');
+  assert.equal(doc.getElementById('save').getAttribute('form'), 'settings');
+  assert.ok(doc.querySelector('main > .toolbar').contains(doc.getElementById('restore')));
+  assert.ok(doc.querySelector('main > .toolbar').contains(doc.getElementById('save')));
+  assert.doesNotMatch(doc.body.textContent, /默认 low；清空后不发送 reasoning_effort|恢复后点击/);
+  assert.equal(doc.getElementById('reasoningEffort').hasAttribute('aria-describedby'), false);
+});
+
+test('恢复丢弃跨分类草稿并关闭，不申请权限或写入存储', async () => {
+  const app = await setup(true, { apiKey: 'saved-key', systemPrompt: '已保存提示词' });
+  const doc = app.document;
+  doc.getElementById('apiKey').value = 'new-key';
+  doc.getElementById('prompt-tab').click();
+  doc.getElementById('systemPrompt').value = '新提示词';
+  doc.getElementById('restore').click();
+  assert.equal(app.closed, true);
+  assert.equal(app.saved, undefined);
+  assert.equal(app.requested, undefined);
+});
+
+test('确认统一保存不同分类的修改', async () => {
+  const app = await setup(true, { apiKey: 'saved-key' });
+  const doc = app.document;
+  doc.getElementById('model').value = 'new-model';
+  doc.getElementById('prompt-tab').click();
+  doc.getElementById('systemPrompt').value = '新提示词';
+  doc.getElementById('settings').dispatchEvent(new doc.defaultView.Event('submit', { cancelable: true }));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(app.saved.model, 'new-model');
+  assert.equal(app.saved.systemPrompt, '新提示词');
+  assert.equal(app.closed, true);
 });
 
 test('自定义提示词加载与恢复默认均通过统一保存生效', async () => {

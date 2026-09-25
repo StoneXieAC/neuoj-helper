@@ -117,6 +117,14 @@ test('题面代码块保留缩进和空行，公式只读取一次', () => {
   assert.match(body, /```\nif \(x\) \{\n    run\(\);\n\n    done\(\);\n\}/);
 });
 
+test('题面表格保留单元格边界和行边界', () => {
+  const doc = new JSDOM('<div id="problem-content-vditor"><table><thead><tr><th>输入</th><th>输出</th></tr></thead><tbody><tr><td>1 2</td><td>3 4</td></tr></tbody></table></div>').window.document;
+  const problem = core.extractProblem(doc);
+  assert.equal(problem.body, '输入 | 输出\n1 2 | 3 4');
+  const prompt = core.buildPrompt({ status: 'WA', source: 'int main() {}', compile: { errors: '' }, cases: [] }, problem);
+  assert.match(prompt, /输入 \| 输出\n1 2 \| 3 4/);
+});
+
 test('超长题面保留截断标记、测试点证据和源码', () => {
   const report = core.extractSubmission(page({ cases: caseHtml(1, '答案错误', 'Judge: 42<br>Team: 24') }), direct);
   const prompt = core.buildPrompt(report, { title: '长题目', body: '要求'.repeat(10000),
@@ -145,6 +153,15 @@ test('隐藏的 WA 弹窗提取标准答案与用户输出，忽略编译警告�
   assert.match(prompt, /用户输出："456"/);
   assert.doesNotMatch(prompt, /输入：页面未提供/);
   assert.doesNotMatch(prompt, /unused variable|memory-bytes/);
+});
+
+test('多行 Judge 和 Team 输出分别归属标准答案与用户输出', () => {
+  const report = core.extractSubmission(page({ cases: caseHtml(1, '答案错误', 'Wrong answer on line 2<br>Judge: 1<br>2<br>Team: 1<br>3') }), direct);
+  assert.deepEqual(report.cases[0].diff, { expected: '1\n2', actual: '1\n3', detail: 'Wrong answer on line 2' });
+  const prompt = core.buildPrompt(report);
+  assert.match(prompt, /对比说明：Wrong answer on line 2/);
+  assert.match(prompt, /标准答案：1\n2\n用户输出：1\n3/);
+  assert.doesNotMatch(prompt, /对比说明：[\s\S]*2\n3/);
 });
 
 test('Judge 和 Team 分别缺失时，不产生空白答案项', () => {

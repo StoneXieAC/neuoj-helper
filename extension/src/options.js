@@ -7,6 +7,7 @@ const CATEGORIES = [
 const form = document.getElementById('settings');
 const message = document.getElementById('message');
 const saveButton = document.getElementById('save');
+const restoreButton = document.getElementById('restore');
 const fields = {
   baseUrl: document.getElementById('baseUrl'),
   apiKey: document.getElementById('apiKey'),
@@ -85,6 +86,8 @@ document.getElementById('restoreDefault').addEventListener('click', () => {
   message.textContent = '';
 });
 
+restoreButton.addEventListener('click', () => window.close());
+
 form.addEventListener('submit', async event => {
   event.preventDefault();
   if (saveButton.disabled) return;
@@ -105,6 +108,7 @@ form.addEventListener('submit', async event => {
   }
   message.textContent = '';
   saveButton.disabled = true;
+  restoreButton.disabled = true;
   const apiUrl = new URL(baseUrl);
   const origin = `${apiUrl.protocol}//${apiUrl.hostname}/*`;
   try {
@@ -116,5 +120,5 @@ form.addEventListener('submit', async event => {
     window.close();
   } catch (error) {
     message.textContent = `保存失败：${error.message}`;
-  } finally { saveButton.disabled = false; }
+  } finally { saveButton.disabled = false; restoreButton.disabled = false; }
 });

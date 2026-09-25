@@ -87,7 +87,14 @@
       if (tag === 'br') { parts.push('\n'); return; }
       if (tag === 'li') parts.push('\n- ');
       if (tag === 'pre') { parts.push('\n```\n', current.textContent, '\n```\n'); return; }
-      for (const child of current.childNodes) walk(child);
+      let hasCell = false;
+      for (const child of current.childNodes) {
+        if (tag === 'tr' && child.nodeType === 1 && ['th', 'td'].includes(child.tagName.toLowerCase())) {
+          if (hasCell) parts.push(' | ');
+          hasCell = true;
+        }
+        walk(child);
+      }
       if (['p', 'li', 'div', 'h1', 'h2', 'h3', 'h4', 'h5', 'tr'].includes(tag)) parts.push('\n');
     }
     walk(node);
@@ -153,10 +160,15 @@
 
   function parseDiff(text) {
     const lines = clean(text).split('\n');
-    const expected = lines.find(line => /^\s*(?:judge|jury)\s*:/i.test(line));
-    const actual = lines.find(line => /^\s*(?:team|him)\s*:/i.test(line));
-    const strip = line => line ? line.replace(/^\s*(?:judge|jury|team|him)\s*:\s*/i, '') : '';
-    return { expected: strip(expected), actual: strip(actual), detail: lines.filter(line => line !== expected && line !== actual).join('\n').trim() };
+    const sections = { expected: [], actual: [], detail: [] };
+    let section = 'detail';
+    for (const line of lines) {
+      const label = /^\s*(judge|jury|team|him)\s*:\s*/i.exec(line);
+      if (label) section = /^(?:judge|jury)$/i.test(label[1]) ? 'expected' : 'actual';
+      sections[section].push(label ? line.slice(label[0].length) : line);
+    }
+    return { expected: sections.expected.join('\n').trim(), actual: sections.actual.join('\n').trim(),
+      detail: sections.detail.join('\n').trim() };
   }
 
   function usefulSystem(text, status = '') {

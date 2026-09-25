@@ -8,7 +8,11 @@
 </head>
 <body>
   <main>
-    <header><h1>NEUOJ 小助手</h1><p>设置</p></header>
+    <header class="toolbar">
+      <p id="message" role="status" aria-live="polite"></p>
+      <button id="restore" type="button" class="secondary">恢复</button>
+      <button id="save" type="submit" form="settings" disabled>确认</button>
+    </header>
     <div class="layout">
       <nav id="categories" aria-label="设置分类"></nav>
       <form id="settings">
@@ -22,8 +26,7 @@
           <label for="model">Model</label>
           <input id="model" name="model" type="text" required spellcheck="false" autocomplete="off">
           <label for="reasoningEffort">思考等级</label>
-          <input id="reasoningEffort" name="reasoningEffort" type="text" spellcheck="false" autocomplete="off" aria-describedby="reasoningEffortHelp">
-          <p id="reasoningEffortHelp" class="field-help">默认 low；清空后不发送 reasoning_effort。</p>
+          <input id="reasoningEffort" name="reasoningEffort" type="text" spellcheck="false" autocomplete="off">
           <p class="field-help">API Key 仅保存在本机。保存时 Chrome 会请求访问接口域名的权限。</p>
         </section>
         <section id="prompt-panel" class="settings-panel" aria-labelledby="prompt-tab" hidden>
@@ -31,9 +34,8 @@
           <p class="intro">此提示词作为系统消息发送给模型，用于指导错误分析。</p>
           <label for="systemPrompt">系统提示词</label>
           <textarea id="systemPrompt" name="systemPrompt" rows="15" maxlength="10000" spellcheck="false"></textarea>
-          <div class="prompt-actions"><button id="restoreDefault" type="button" class="secondary">恢复默认</button><span>恢复后点击“确定”才会保存。</span></div>
+          <div class="prompt-actions"><button id="restoreDefault" type="button" class="secondary">恢复默认</button></div>
         </section>
-        <footer><p id="message" role="status" aria-live="polite"></p><button id="save" type="submit" disabled>确定</button></footer>
       </form>
     </div>
   </main>
