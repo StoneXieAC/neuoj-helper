@@ -83,7 +83,23 @@ test('测试连接使用未保存的表单值，不写入设置', async () => {
   assert.equal(app.tested.settings.model, 'draft-model');
   assert.equal(app.tested.settings.reasoningEffort, '');
   assert.equal(app.saved, undefined);
-  assert.match(doc.getElementById('message').textContent, /连接测试成功/);
+  const connectionMessage = doc.getElementById('connectionMessage');
+  assert.equal(connectionMessage.parentElement.querySelector('button'), doc.getElementById('testConnection'));
+  assert.equal(connectionMessage.textContent, '连接测试成功');
+  assert.equal(connectionMessage.dataset.state, 'success');
+  assert.equal(doc.getElementById('message').textContent, '');
+});
+
+test('连接测试的进行中与失败提示显示在按钮旁', async () => {
+  const app = await setup(true, {}, false, { ok: false, error: '请求失败' });
+  const doc = app.document;
+  doc.getElementById('apiKey').value = 'secret';
+  doc.getElementById('testConnection').click();
+  assert.equal(doc.getElementById('connectionMessage').textContent, '正在测试连接…');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(doc.getElementById('connectionMessage').textContent, '连接测试失败：请求失败');
+  assert.equal(doc.getElementById('connectionMessage').dataset.state, 'error');
+  assert.equal(doc.getElementById('message').textContent, '');
 });
 
 test('拒绝接口权限时不会保存设置', async () => {

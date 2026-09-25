@@ -6,6 +6,7 @@ const CATEGORIES = [
 ];
 const form = document.getElementById('settings');
 const message = document.getElementById('message');
+const connectionMessage = document.getElementById('connectionMessage');
 const saveButton = document.getElementById('save');
 const restoreButton = document.getElementById('restore');
 const testButton = document.getElementById('testConnection');
@@ -96,28 +97,31 @@ testButton.addEventListener('click', async () => {
   const model = fields.model.value.trim();
   const reasoningEffort = fields.reasoningEffort.value.trim();
   if (!baseUrl || !apiKey || !model) {
+    connectionMessage.textContent = '';
     message.textContent = '请填写有效的地址、API Key 和模型名称。接口地址须为 HTTPS 或本机 HTTP。';
     return;
   }
   testButton.disabled = true;
-  message.dataset.state = 'loading';
-  message.textContent = '正在测试连接…';
+  message.textContent = '';
+  connectionMessage.dataset.state = 'loading';
+  connectionMessage.textContent = '正在测试连接…';
   const apiUrl = new URL(baseUrl);
   const origin = `${apiUrl.protocol}//${apiUrl.hostname}/*`;
   try {
     if (!await chrome.permissions.request({ origins: [origin] })) {
-      message.textContent = '未获得接口域名权限，无法测试连接。';
+      connectionMessage.dataset.state = 'error';
+      connectionMessage.textContent = '未获得接口域名权限，无法测试连接。';
       return;
     }
     const response = await new Promise(resolve => {
       chrome.runtime.sendMessage({ type: 'TEST_CONNECTION', settings: { baseUrl, apiKey, model, reasoningEffort } },
         result => resolve(chrome.runtime.lastError ? { ok: false, error: chrome.runtime.lastError.message } : result));
     });
-    message.dataset.state = response?.ok ? 'success' : 'error';
-    message.textContent = response?.ok ? '连接测试成功。' : `连接测试失败：${response?.error || '未知错误。'}`;
+    connectionMessage.dataset.state = response?.ok ? 'success' : 'error';
+    connectionMessage.textContent = response?.ok ? '连接测试成功' : `连接测试失败：${response?.error || '未知错误。'}`;
   } catch (error) {
-    message.dataset.state = 'error';
-    message.textContent = `连接测试失败：${error.message || '未知错误。'}`;
+    connectionMessage.dataset.state = 'error';
+    connectionMessage.textContent = `连接测试失败：${error.message || '未知错误。'}`;
   } finally { testButton.disabled = false; }
 });
 
