@@ -4,13 +4,17 @@ const { JSDOM } = require('jsdom');
 const core = require('../extension/src/core.js');
 
 const direct = 'https://oj.neu.edu.cn/training/8/submission/1716135';
-const vpn = 'https://webvpn.neu.edu.cn/https/opaque-id/training/8/submission/1716135';
+const vpn = 'https://webvpn.neu.edu.cn/https/62304135386136393339346365373340bfebea318fd008d8f60d257088/training/8/submission/1716135';
 const directProblem = 'https://oj.neu.edu.cn/training/8/part/68/problem/286';
-const vpnProblem = 'https://webvpn.neu.edu.cn/https/opaque-id/training/8/part/68/problem/286';
+const vpnProblem = 'https://webvpn.neu.edu.cn/https/62304135386136393339346365373340bfebea318fd008d8f60d257088/training/8/part/68/problem/286';
 const directGeneral = 'https://oj.neu.edu.cn/submissions/1716650';
-const vpnGeneral = 'https://webvpn.neu.edu.cn/https/opaque-id/submissions/1716650';
+const vpnGeneral = 'https://webvpn.neu.edu.cn/https/62304135386136393339346365373340bfebea318fd008d8f60d257088/submissions/1716650';
 const directGeneralProblem = 'https://oj.neu.edu.cn/problems/43';
-const vpnGeneralProblem = 'https://webvpn.neu.edu.cn/https/opaque-id/problems/43';
+const vpnGeneralProblem = 'https://webvpn.neu.edu.cn/https/62304135386136393339346365373340bfebea318fd008d8f60d257088/problems/43';
+const contest = 'https://oj.neu.edu.cn/contest/42/submission/1716680';
+const vpnContest = 'https://webvpn.neu.edu.cn/https/62304135386136393339346365373340bfebea318fd008d8f60d257088/contest/42/submission/1716680';
+const vpnContestPlural = 'https://webvpn.neu.edu.cn/https/62304135386136393339346365373340bfebea318fd008d8f60d257088/contest/162/submissions/1711165';
+const vpnContestProblem = 'https://webvpn.neu.edu.cn/https/62304135386136393339346365373340bfebea318fd008d8f60d257088/contest/162/problem/10';
 
 function caseHtml(index, status, diff = '', error = '', system = '') {
   return `<div class="card"><div class="card-body"><div>#${String(index).padStart(3, '0')} ${status}</div>
@@ -35,13 +39,45 @@ test('仅识别两个允许域名下具有提交结构的页面', () => {
   assert.equal(core.isSubmissionPage(doc, vpn), true);
   assert.equal(core.isSubmissionPage(doc, directGeneral), true);
   assert.equal(core.isSubmissionPage(doc, vpnGeneral), true);
-  assert.equal(core.isSubmissionUrl('https://webvpn.neu.edu.cn/https/opaque-id/training/8/problems'), false);
+  assert.equal(core.isSubmissionPage(doc, contest), true);
+  assert.equal(core.isSubmissionPage(doc, vpnContest), true);
+  assert.equal(core.isSubmissionPage(doc, vpnContestPlural), true);
+  assert.equal(core.isSubmissionUrl(`${contest}?tab=compile#tabs-compile-info`), true);
+  assert.equal(core.isSubmissionUrl('https://webvpn.neu.edu.cn/https/62304135386136393339346365373340bfebea318fd008d8f60d257088/training/8/problems'), false);
   assert.equal(core.isSubmissionUrl('https://evil.example/training/8/submission/1716135'), false);
   assert.equal(core.isSubmissionUrl('https://webvpn.neu.edu.cn/other/training/8/submission/1716135'), false);
-  assert.equal(core.isSubmissionUrl('https://oj.neu.edu.cn/other/submissions/1716650'), false);
+  assert.equal(core.isSubmissionUrl('https://oj.neu.edu.cn/other/submissions/1716650'), true);
+  assert.equal(core.isSubmissionUrl('https://webvpn.neu.edu.cn/https/other-id/contest/42/submission/1716680'), false);
+  assert.equal(core.isSubmissionUrl('https://oj.neu.edu.cn/contest/42/submission/nope'), false);
   assert.equal(core.isSubmissionUrl('https://webvpn.neu.edu.cn/submissions/1716650'), false);
   doc.getElementById('tabs-source-code').remove();
   assert.equal(core.isSubmissionPage(doc, direct), false);
+});
+
+test('Contest 提交能定位同范围内的题目链接', () => {
+  const doc = new JSDOM('<a>返回题目</a>').window.document;
+  const link = doc.querySelector('a');
+  for (const submission of [contest, vpnContest]) {
+    const problem = submission.replace('/submission/1716680', '/problem/12');
+    link.href = problem;
+    assert.equal(core.problemUrl(doc, submission), problem);
+    link.href = problem.replace('/contest/42/', '/contest/43/');
+    assert.equal(core.problemUrl(doc, submission), null);
+  }
+  link.href = vpnContestProblem;
+  assert.equal(core.problemUrl(doc, vpnContestPlural), vpnContestProblem);
+  for (const bad of [vpnContestProblem.replace('/contest/162/', '/contest/163/'),
+    vpnContestProblem.replace('/https/62304135386136393339346365373340bfebea318fd008d8f60d257088/', '/https/other-id/'),
+    vpnContestProblem.replace('webvpn.neu.edu.cn', 'evil.example'),
+    vpnContestProblem.replace('/problem/10', '/problems/10')]) {
+    link.href = bad;
+    assert.equal(core.problemUrl(doc, vpnContestPlural), null);
+  }
+});
+
+test('Contest 题面沿用正文、标题和样例提取', () => {
+  const doc = new JSDOM('<div class="col-7"><div class="card mb-2"><div class="card-header"><a class="nav-link"><strong>J - 状态转换</strong></a></div></div><div id="problem-content-vditor"><p>按规则转换状态。</p></div><div id="example-input">3</div><div id="example-output">7</div></div>').window.document;
+  assert.deepEqual(core.extractProblem(doc), { title: 'J - 状态转换', body: '按规则转换状态。', inputExample: '3', outputExample: '7' });
 });
 
 test('最小页面样例提取题目链接、标题、公式、约束和样例', () => {
@@ -74,7 +110,7 @@ test('通用提交页从返回题目链接读取全局题目，并限制同源�
   for (const bad of ['https://evil.example/problems/43',
     'https://webvpn.neu.edu.cn/https/other-id/problems/43',
     'https://webvpn.neu.edu.cn/problems/43',
-    'https://webvpn.neu.edu.cn/https/opaque-id/problems/43/editorial',
+    'https://webvpn.neu.edu.cn/https/62304135386136393339346365373340bfebea318fd008d8f60d257088/problems/43/editorial',
     vpnProblem]) {
     link.href = bad;
     assert.equal(core.problemUrl(doc, vpnGeneral), null);
@@ -101,8 +137,8 @@ test('题目链接必须与提交页同源、同训练和同 WebVPN 代理前缀
   assert.equal(core.problemUrl(doc, direct), directProblem);
   for (const bad of ['https://evil.example/training/8/part/68/problem/286',
     'https://webvpn.neu.edu.cn/https/other/training/8/part/68/problem/286',
-    'https://webvpn.neu.edu.cn/https/opaque-id/training/9/part/68/problem/286',
-    'https://webvpn.neu.edu.cn/https/opaque-id/training/8/part/68/problem/286/editorial']) {
+    'https://webvpn.neu.edu.cn/https/62304135386136393339346365373340bfebea318fd008d8f60d257088/training/9/part/68/problem/286',
+    'https://webvpn.neu.edu.cn/https/62304135386136393339346365373340bfebea318fd008d8f60d257088/training/8/part/68/problem/286/editorial']) {
     link.href = bad;
     assert.equal(core.problemUrl(doc, vpn), null);
   }
@@ -195,6 +231,21 @@ test('CE 只包含实际编译错误，未完成的结果不会发起分析', ()
   const pending = core.extractSubmission(page({ compileLabel: '编译警告', compileText: 'warning: unused variable' }), direct);
   assert.equal(pending.status, 'PENDING');
   assert.equal(core.buildPrompt(pending), null);
+});
+
+test('编译出错优先于仍在等待的测试点', () => {
+  const report = core.extractSubmission(page({ compileLabel: '编译出错',
+    compileText: 'Compiling failed with exitcode 1, compiler output: main.cpp:1:6: error: expected declaration',
+    cases: caseHtml(1, '等待评测') + caseHtml(2, '等待评测') }), direct);
+  assert.equal(report.status, 'CE');
+  assert.match(report.compile.errors, /expected declaration/);
+  assert.match(core.buildPrompt(report), /【编译错误】[\s\S]*expected declaration/);
+  assert.doesNotMatch(core.buildPrompt(report), /【失败测试点】/);
+  const rawOnly = core.extractSubmission(page({ compileLabel: '编译信息',
+    compileText: 'main.cpp:2:1: fatal error: missing header',
+    cases: caseHtml(1, '等待评测') }), direct);
+  assert.equal(rawOnly.status, 'CE');
+  assert.match(rawOnly.compile.errors, /missing header/);
 });
 
 test('RE、TLE、MLE 筛选诊断字段，并识别混合状态', () => {

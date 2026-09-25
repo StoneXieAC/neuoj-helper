@@ -5,6 +5,7 @@ const MAX_ANSWER = 200000;
 const SETTINGS_WINDOW_KEY = 'settingsWindowId';
 const RESULTS_KEY = 'analysisResults';
 const MAX_RESULTS = 10;
+const VPN_PREFIX = '/https/62304135386136393339346365373340bfebea318fd008d8f60d257088';
 let systemPromptPromise;
 let optionsOpening;
 let cacheWrite = Promise.resolve();
@@ -25,11 +26,11 @@ function validateSender(sender) {
   try { url = new URL(sender?.url); } catch { url = null; }
   let path = url?.pathname || '';
   if (url?.hostname === 'webvpn.neu.edu.cn') {
-    const prefix = path.match(/^\/(?:https|http)\/[^/]+(?=\/)/)?.[0];
-    path = prefix ? path.slice(prefix.length) : '';
+    path = path.startsWith(`${VPN_PREFIX}/`) ? path.slice(VPN_PREFIX.length) : '';
   }
   if (!url || !['oj.neu.edu.cn', 'webvpn.neu.edu.cn'].includes(url.hostname) ||
-    url.protocol !== 'https:' || !/^(?:\/training\/\d+\/submission|\/submissions)\/\d+\/?$/.test(path)) {
+    url.protocol !== 'https:' || url.username || url.password ||
+    !/(?:^|\/)submissions?\/\d+\/?$/.test(path)) {
     throw new Error('只能从 NEUOJ 提交详情页使用插件。');
   }
 }
@@ -43,7 +44,7 @@ function submissionKey(raw) {
   const url = new URL(raw);
   let path = url.pathname.replace(/\/$/, '');
   if (url.hostname === 'webvpn.neu.edu.cn') {
-    path = path.replace(/^\/(?:https|http)\/[^/]+(?=\/)/, '');
+    path = path.slice(VPN_PREFIX.length);
     return `webvpn:${path}`;
   }
   return `${url.origin}${path}`;

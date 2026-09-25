@@ -9,7 +9,7 @@ const core = require('../extension/src/core.js');
 
 const backgroundScript = fs.readFileSync(path.join(__dirname, '../extension/src/background.js'), 'utf8');
 const contentScript = fs.readFileSync(path.join(__dirname, '../extension/src/content.js'), 'utf8');
-const pageUrl = 'https://webvpn.neu.edu.cn/https/proxy-one/submissions/1716622';
+const pageUrl = 'https://webvpn.neu.edu.cn/https/62304135386136393339346365373340bfebea318fd008d8f60d257088/submissions/1716622';
 
 function startBackground(local) {
   let onMessage;
@@ -95,7 +95,7 @@ test('WebVPN 成功分析后重建后台和页面仍恢复本机缓存', async (
   assert.equal(local.analysisResults[0].answer, '**缓存结论**');
 
   const reloadedBackground = startBackground(local);
-  const reloadedPage = openPage(reloadedBackground, pageUrl.replace('proxy-one', 'proxy-two'));
+  const reloadedPage = openPage(reloadedBackground, `${pageUrl}#tabs-testcase-judging`);
   await new Promise(resolve => setImmediate(resolve));
   const shadow = reloadedPage.document.getElementById('neuoj-helper-root').shadowRoot;
   assert.equal(shadow.querySelector('.result strong').textContent, '缓存结论');

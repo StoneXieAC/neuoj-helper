@@ -8,20 +8,23 @@
   const TRUNCATED = '[内容过长，已截断]';
   const DEFAULTS = Object.freeze({ baseUrl: 'https://api.deepseek.com', model: 'deepseek-flash' });
   const MAX_PROMPT = 24000;
+  const VPN_PREFIX = '/https/62304135386136393339346365373340bfebea318fd008d8f60d257088';
 
-  function isSubmissionUrl(raw) {
+  function submissionPath(raw) {
     try {
       const url = new URL(raw);
-      if (url.protocol !== 'https:') return false;
-      if (url.hostname !== 'oj.neu.edu.cn' && url.hostname !== 'webvpn.neu.edu.cn') return false;
+      if (url.protocol !== 'https:' || url.username || url.password) return null;
       let path = url.pathname;
       if (url.hostname === 'webvpn.neu.edu.cn') {
-        const prefix = path.match(/^\/(?:https|http)\/[^/]+(?=\/)/)?.[0];
-        if (!prefix) return false;
-        path = path.slice(prefix.length);
-      }
-      return /^(?:\/training\/\d+\/submission|\/submissions)\/\d+\/?$/.test(path);
-    } catch { return false; }
+        if (!path.startsWith(`${VPN_PREFIX}/`)) return null;
+        path = path.slice(VPN_PREFIX.length);
+      } else if (url.hostname !== 'oj.neu.edu.cn') return null;
+      return /(?:^|\/)submissions?\/\d+\/?$/.test(path) ? path : null;
+    } catch { return null; }
+  }
+
+  function isSubmissionUrl(raw) {
+    return submissionPath(raw) !== null;
   }
 
   function isSubmissionPage(doc, raw) {
@@ -30,12 +33,15 @@
   }
 
   function problemUrl(doc, submissionUrl) {
-    if (!isSubmissionUrl(submissionUrl)) return null;
+    const path = submissionPath(submissionUrl);
+    if (!path) return null;
     const submission = new URL(submissionUrl);
-    const training = submission.pathname.match(/^(.*\/training\/\d+)\/submission\/\d+\/?$/);
-    const general = submission.pathname.match(/^(.*)\/submissions\/\d+\/?$/);
-    const base = training?.[1] ?? general?.[1];
-    if (base === undefined) return null;
+    const base = submission.pathname.replace(/\/submissions?\/\d+\/?$/, '');
+    let problemPath;
+    if (/^\/submissions?\/\d+\/?$/.test(path)) problemPath = /^\/problems\/\d+\/?$/;
+    else if (/^\/training\/\d+\/submissions?\/\d+\/?$/.test(path)) problemPath = /^\/part\/\d+\/problem\/\d+\/?$/;
+    else if (/^\/contest\/\d+\/submissions?\/\d+\/?$/.test(path)) problemPath = /^\/problem\/\d+\/?$/;
+    else problemPath = /(?:^|\/)problem\/\d+\/?$/;
     for (const link of doc.querySelectorAll('a[href]')) {
       if (link.textContent.trim() !== '返回题目') continue;
       try {
@@ -43,8 +49,7 @@
         if (target.origin !== submission.origin || target.username || target.password) continue;
         if (!target.pathname.startsWith(`${base}/`)) continue;
         const relative = target.pathname.slice(base.length);
-        if (training ? !/^\/part\/\d+\/problem\/\d+\/?$/.test(relative)
-          : !/^\/problems\/\d+\/?$/.test(relative)) continue;
+        if (!problemPath.test(relative)) continue;
         target.hash = '';
         return target.href;
       } catch { /* 忽略无效链接。 */ }
@@ -131,7 +136,7 @@
 
   function classify(text) {
     const value = clean(text).toLowerCase();
-    if (/编译(?:错误|失败)|compilation error|compile error|(^|\W)ce(\W|$)/i.test(value)) return 'CE';
+    if (/编译(?:错误|失败|出错)|compilation error|compile error|(^|\W)ce(\W|$)/i.test(value)) return 'CE';
     if (/运行(?:时)?错误|运行异常|runtime error|(^|\W)re(\W|$)/i.test(value)) return 'RE';
     if (/时间超限|运行超时|time limit exceeded|(^|\W)tle(\W|$)/i.test(value)) return 'TLE';
     if (/内存超限|memory limit exceeded|(^|\W)mle(\W|$)/i.test(value)) return 'MLE';
@@ -202,7 +207,7 @@
     const compilePane = doc.getElementById('tabs-compile-info');
     const compileLabel = nodeText(compilePane.querySelector('.card-header'));
     const compileRaw = codeText(compilePane.querySelector('#output_compile'));
-    const compileHasError = classify(compileLabel) === 'CE' || /(?:^|\n).*?(?:fatal error:|error:|编译错误|编译失败)/im.test(compileRaw);
+    const compileHasError = classify(compileLabel) === 'CE' || /(?:^|\n).*?(?:fatal error:|error:|编译错误|编译失败|编译出错)/im.test(compileRaw);
     const compile = { label: compileLabel, errors: compileHasError ? compileRaw : '' };
     const cases = [];
     const pane = doc.getElementById('tabs-testcase-judging');
@@ -223,7 +228,7 @@
     const failed = cases.filter(item => item.status !== 'AC' && item.status !== 'UNKNOWN');
     const kinds = [...new Set(failed.map(item => item.status))];
     let status = 'PENDING';
-    if (compileHasError && cases.length === 0) status = 'CE';
+    if (compileHasError) status = 'CE';
     else if (kinds.length === 1) status = kinds[0];
     else if (kinds.length > 1) status = 'MIXED';
     else if (cases.length && cases.every(item => item.status === 'AC')) status = 'AC';

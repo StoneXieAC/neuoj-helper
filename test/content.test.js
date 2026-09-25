@@ -8,13 +8,16 @@ const markdownit = require('markdown-it');
 const core = require('../extension/src/core.js');
 
 const script = fs.readFileSync(path.join(__dirname, '../extension/src/content.js'), 'utf8');
-const url = 'https://webvpn.neu.edu.cn/https/opaque-id/training/8/submission/123';
-const problemUrl = 'https://webvpn.neu.edu.cn/https/opaque-id/training/8/part/68/problem/286';
-const generalUrl = 'https://webvpn.neu.edu.cn/https/opaque-id/submissions/123';
-const generalProblemUrl = 'https://webvpn.neu.edu.cn/https/opaque-id/problems/43';
+const url = 'https://webvpn.neu.edu.cn/https/62304135386136393339346365373340bfebea318fd008d8f60d257088/training/8/submission/123';
+const problemUrl = 'https://webvpn.neu.edu.cn/https/62304135386136393339346365373340bfebea318fd008d8f60d257088/training/8/part/68/problem/286';
+const generalUrl = 'https://webvpn.neu.edu.cn/https/62304135386136393339346365373340bfebea318fd008d8f60d257088/submissions/123';
+const generalProblemUrl = 'https://webvpn.neu.edu.cn/https/62304135386136393339346365373340bfebea318fd008d8f60d257088/problems/43';
 const directGeneralUrl = 'https://oj.neu.edu.cn/submissions/123';
 const directGeneralProblemUrl = 'https://oj.neu.edu.cn/problems/43';
+const contestUrl = 'https://webvpn.neu.edu.cn/https/62304135386136393339346365373340bfebea318fd008d8f60d257088/contest/162/submissions/1711165';
+const contestProblemUrl = 'https://webvpn.neu.edu.cn/https/62304135386136393339346365373340bfebea318fd008d8f60d257088/contest/162/problem/10';
 const problemHtml = '<div class="col-7"><div class="card mb-2"><div class="card-header"><a class="nav-link"><strong>求幂</strong></a></div></div><div id="problem-content-vditor"><p>计算 <span data-math="m^n">公式</span>。</p></div><div id="example-input">5 8</div><div id="example-output">390625</div></div>';
+const contestProblemHtml = '<div class="col-7"><div class="card mb-2"><div class="card-header"><a class="nav-link"><strong>J - 状态转换</strong></a></div></div><div id="problem-content-vditor"><p>按规则转换状态。</p></div><div id="example-input">3</div><div id="example-output">7</div></div>';
 const flush = () => new Promise(resolve => setImmediate(resolve));
 
 function setup(status, optionsResponse = { ok: true }, fetchProblem = async () => ({ ok: true, url: problemUrl, text: async () => problemHtml }), pageUrl = url, linkedProblem = problemUrl, cachedAnswer = null) {
@@ -105,6 +108,26 @@ test('WA 点击后才发送提示词，收到首段即显示 Markdown，完成�
   assert.equal(status.textContent, '分析完成');
   assert.ok(status.querySelector('.status-icon[aria-hidden="true"]'));
   assert.equal(status.querySelector('.status-text').textContent, '分析完成');
+});
+
+test('Contest 复数提交页点击后获取同比赛题面并发送分析', async () => {
+  let requestedUrl;
+  const fetchProblem = async url => {
+    requestedUrl = url;
+    return { ok: true, url, text: async () => contestProblemHtml };
+  };
+  const app = setup('答案错误', { ok: true }, fetchProblem, contestUrl, contestProblemUrl);
+  const button = app.document.getElementById('neuoj-helper-root').shadowRoot.querySelector('button');
+  assert.equal(button.disabled, false);
+  assert.equal(app.fetchCount, 0);
+  button.click();
+  await flush();
+  assert.equal(requestedUrl, contestProblemUrl);
+  assert.equal(app.sent.type, 'ANALYZE');
+  assert.match(app.sent.prompt, /题目：J - 状态转换/);
+  assert.match(app.sent.prompt, /按规则转换状态/);
+  assert.match(app.sent.prompt, /输入样例：[\s\S]*3/);
+  app.emit({ type: 'DONE' });
 });
 
 test('再次进入同一提交时直接恢复缓存，重新分析仍由用户点击触发', async () => {
@@ -322,6 +345,26 @@ test('异步评测完成后分析按钮自动启用', async () => {
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(button.disabled, false);
   assert.equal(status.hidden, true);
+});
+
+test('测试点持续等待时编译出错可点击分析', async () => {
+  const app = setup('等待评测');
+  const shadow = app.document.getElementById('neuoj-helper-root').shadowRoot;
+  const button = shadow.querySelector('button');
+  assert.equal(button.disabled, true);
+  const compilePane = app.document.getElementById('tabs-compile-info');
+  compilePane.querySelector('.card-header').textContent = '编译信息 编译出错';
+  compilePane.insertAdjacentHTML('beforeend', '<div id="output_compile"><pre><code>main.cpp:1:6: error: expected declaration</code></pre></div>');
+  await flush();
+  assert.equal(button.disabled, false);
+  assert.equal(shadow.querySelector('.status').hidden, true);
+  assert.equal(app.fetchCount, 0);
+  button.click();
+  await flush();
+  assert.equal(app.sent.type, 'ANALYZE');
+  assert.match(app.sent.prompt, /提交状态：CE/);
+  assert.match(app.sent.prompt, /expected declaration/);
+  app.emit({ type: 'DONE' });
 });
 
 test('评测中转为 AC 时保留面板并禁用分析', async () => {
