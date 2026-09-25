@@ -36,7 +36,7 @@ function createMathJax(dom) {
   };
 }
 
-function setup(status, optionsResponse = { ok: true }, fetchProblem = async () => ({ ok: true, url: problemUrl, text: async () => problemHtml }), pageUrl = url, linkedProblem = problemUrl, cachedAnswer = null, timers = null, mathjaxFactory = createMathJax) {
+function setup(status, optionsResponse = { ok: true }, fetchProblem = async () => ({ ok: true, url: problemUrl, text: async () => problemHtml }), pageUrl = url, linkedProblem = problemUrl, cachedAnswer = null, timers = null, mathjaxFactory = createMathJax, writeClipboard = async () => {}) {
   const dom = new JSDOM(`<!doctype html><html><body><a href="${linkedProblem}">返回题目</a><div id="tabs-source-code"><button data-clipboard-text="int main(){}"></button></div>
     <div id="tabs-compile-info"><div class="card-header">编译成功</div></div>
     <div class="tab-content"><div id="tabs-testcase-judging"><div class="card"><div class="card-body"><div>#001 ${status}</div>
@@ -46,6 +46,7 @@ function setup(status, optionsResponse = { ok: true }, fetchProblem = async () =
   let sent;
   let fetchCount = 0;
   let cacheRequests = 0;
+  const copied = [];
   let receive;
   let disconnected;
   const port = {
@@ -70,9 +71,13 @@ function setup(status, optionsResponse = { ok: true }, fetchProblem = async () =
     }
   } };
   const mathjax = mathjaxFactory(dom);
+  Object.defineProperty(dom.window.navigator, 'clipboard', { value: { async writeText(value) {
+    copied.push(value);
+    await writeClipboard(value);
+  } } });
   delete texmath.katex;
   const context = { globalThis: { NEUOJCore: core, markdownit, texmath, MathJax: mathjax }, location: dom.window.location,
-    document: dom.window.document, chrome, MutationObserver: dom.window.MutationObserver,
+    document: dom.window.document, navigator: dom.window.navigator, chrome, MutationObserver: dom.window.MutationObserver,
     DOMParser: dom.window.DOMParser, fetch: (...args) => { fetchCount++; return fetchProblem(...args); }, URL, btoa,
     setTimeout: timers?.setTimeout || setTimeout, clearTimeout: timers?.clearTimeout || clearTimeout,
     setInterval, clearInterval, AbortController,
@@ -83,6 +88,7 @@ function setup(status, optionsResponse = { ok: true }, fetchProblem = async () =
     get sent() { return sent; },
     get fetchCount() { return fetchCount; },
     get cacheRequests() { return cacheRequests; },
+    copied,
     mathjax,
     emit(message) { receive(message); },
     disconnect() { disconnected(); }
@@ -549,12 +555,73 @@ test('通用提交页失败时可分析，AC 时显示禁用面板', async () =>
 
 test('角落齿轮具有名称并向后台发送打开消息', () => {
   const app = setup('答案错误');
-  const settings = app.document.getElementById('neuoj-helper-root').shadowRoot.querySelector('.settings');
+  const shadow = app.document.getElementById('neuoj-helper-root').shadowRoot;
+  const settings = shadow.querySelector('.settings');
+  const copy = shadow.querySelector('.copy');
+  assert.deepEqual([...shadow.querySelector('.icon-actions').children], [settings, copy]);
   assert.equal(settings.getAttribute('aria-label'), '接口设置');
   assert.equal(settings.title, '接口设置');
   assert.ok(settings.querySelector('svg[aria-hidden="true"]'));
+  assert.equal(copy.getAttribute('aria-label'), '复制回答');
+  assert.equal(copy.title, '复制回答');
+  assert.ok(copy.querySelector('svg[aria-hidden="true"]'));
+  assert.equal(copy.disabled, true);
   settings.click();
   assert.deepEqual(JSON.parse(JSON.stringify(app.sent)), { type: 'OPEN_OPTIONS' });
+});
+
+test('流式回答可复制 Markdown 原文，重新分析时禁用复制', async () => {
+  const app = setup('答案错误');
+  const shadow = app.document.getElementById('neuoj-helper-root').shadowRoot;
+  const copy = shadow.querySelector('.copy');
+  shadow.querySelector('button').click();
+  await flush();
+  assert.equal(copy.disabled, true);
+  app.emit({ type: 'DELTA', text: '**结论**\n\n$x^2$' });
+  assert.equal(copy.disabled, false);
+  copy.click();
+  await flush();
+  assert.deepEqual(app.copied, ['**结论**\n\n$x^2$']);
+  assert.equal(shadow.querySelector('.copy-status').textContent, '已复制回答');
+  app.emit({ type: 'DELTA', text: '\n\n`代码`' });
+  app.emit({ type: 'DONE' });
+  copy.click();
+  await flush();
+  assert.equal(app.copied[1], '**结论**\n\n$x^2$\n\n`代码`');
+  shadow.querySelector('button').click();
+  assert.equal(copy.disabled, true);
+  assert.equal(shadow.querySelector('.copy-status').hidden, true);
+  assert.equal(app.copied.length, 2);
+  await flush();
+  app.emit({ type: 'DONE' });
+});
+
+test('缓存回答可复制，评测状态变化后不可复制', async () => {
+  const answer = '# 缓存结论\n\n$y = 2$';
+  const app = setup('答案错误', { ok: true }, undefined, directGeneralUrl, directGeneralProblemUrl, answer);
+  const shadow = app.document.getElementById('neuoj-helper-root').shadowRoot;
+  const copy = shadow.querySelector('.copy');
+  assert.equal(copy.disabled, false);
+  copy.click();
+  await flush();
+  assert.deepEqual(app.copied, [answer]);
+  app.document.querySelector('#tabs-testcase-judging .card-body > div').textContent = '#001 答案正确';
+  await flush();
+  assert.equal(copy.disabled, true);
+  assert.equal(shadow.querySelector('.copy-status').hidden, true);
+});
+
+test('剪贴板写入失败时显示错误并保留可复制的回答', async () => {
+  const app = setup('答案错误', { ok: true }, undefined, url, problemUrl, '**缓存**', null, createMathJax,
+    async () => { throw new Error('denied'); });
+  const shadow = app.document.getElementById('neuoj-helper-root').shadowRoot;
+  const copy = shadow.querySelector('.copy');
+  copy.click();
+  await flush();
+  assert.equal(copy.disabled, false);
+  assert.equal(shadow.querySelector('.copy-status').dataset.state, 'error');
+  assert.match(shadow.querySelector('.copy-status').textContent, /复制失败/);
+  assert.equal(shadow.querySelector('.result strong').textContent, '缓存');
 });
 
 test('设置弹窗打开失败时在操作栏显示红色具体原因', () => {

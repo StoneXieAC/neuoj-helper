@@ -149,9 +149,10 @@
       button:hover:not(:disabled) { background:#005fba; }
       button:disabled { opacity:.55; cursor:default; }
       button:focus-visible { outline:2px solid #066fd1; outline-offset:2px; }
-      .settings { display:grid; place-items:center; flex:0 0 28px; width:28px; height:28px; margin-left:auto; padding:0; border-color:#d9e1ec; background:#fff; color:#64748b; }
-      .settings:hover:not(:disabled) { border-color:#b9c7d9; background:#f1f5f9; color:#334155; }
-      .settings svg { width:16px; height:16px; }
+      .icon-actions { display:flex; flex:none; gap:8px; }
+      .icon-actions button { display:grid; place-items:center; flex:0 0 28px; width:28px; height:28px; padding:0; border-color:#d9e1ec; background:#fff; color:#64748b; }
+      .icon-actions button:hover:not(:disabled) { border-color:#b9c7d9; background:#f1f5f9; color:#334155; }
+      .icon-actions button svg { width:16px; height:16px; }
       .status[hidden] { display:none; }
       .status { display:inline-flex; align-items:center; gap:5px; min-width:0; max-width:100%; color:#64748b; font:500 12px/20px system-ui,-apple-system,sans-serif; overflow-wrap:anywhere; }
       .status[data-state="success"] { color:#15803d; }
@@ -201,6 +202,11 @@
     const statusText = document.createElement('span');
     statusText.className = 'status-text';
     status.append(statusIcon, statusText);
+    const copyStatus = document.createElement('span');
+    copyStatus.className = 'status copy-status';
+    copyStatus.setAttribute('role', 'status');
+    copyStatus.setAttribute('aria-live', 'polite');
+    copyStatus.hidden = true;
     function setStatus(state, message = '') {
       status.dataset.state = state;
       statusText.textContent = message;
@@ -219,8 +225,18 @@
         }
       });
     });
-    actions.append(button, status);
-    top.append(actions, settings);
+    const copy = document.createElement('button');
+    copy.type = 'button';
+    copy.className = 'copy';
+    copy.setAttribute('aria-label', '复制回答');
+    copy.title = '复制回答';
+    copy.disabled = true;
+    copy.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8" y="8" width="11" height="11" rx="2"></rect><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"></path></svg>';
+    const iconActions = document.createElement('div');
+    iconActions.className = 'icon-actions';
+    iconActions.append(settings, copy);
+    actions.append(button, status, copyStatus);
+    top.append(actions, iconActions);
     const result = document.createElement('div');
     result.className = 'result';
     result.hidden = true;
@@ -230,10 +246,36 @@
     let heartbeat;
     let scheduledFrame;
     let answer = '';
+    let copyStatusTimer;
     let renderVersion = 0;
     let analysisStarted = false;
     let verdictStatus = report.status;
     let verdictVersion = 0;
+    function clearCopyStatus() {
+      clearTimeout(copyStatusTimer);
+      copyStatus.textContent = '';
+      copyStatus.hidden = true;
+    }
+    function syncCopyButton() {
+      copy.disabled = !answer.trim();
+    }
+    copy.addEventListener('click', async () => {
+      if (!answer.trim()) return;
+      const text = answer;
+      clearCopyStatus();
+      try {
+        await navigator.clipboard.writeText(text);
+        if (answer !== text) return;
+        copyStatus.dataset.state = 'success';
+        copyStatus.textContent = '已复制回答';
+      } catch {
+        if (answer !== text) return;
+        copyStatus.dataset.state = 'error';
+        copyStatus.textContent = '复制失败，请检查剪贴板权限。';
+      }
+      copyStatus.hidden = false;
+      copyStatusTimer = setTimeout(clearCopyStatus, 3000);
+    });
     function restoreCachedResult() {
       if (analysisStarted || ['AC', 'PENDING', 'UNKNOWN'].includes(verdictStatus)) return;
       const currentVersion = verdictVersion;
@@ -242,6 +284,7 @@
           ['AC', 'PENDING', 'UNKNOWN'].includes(verdictStatus) || chrome.runtime.lastError ||
           !response?.ok || typeof response.answer !== 'string' || !response.answer.trim()) return;
         answer = response.answer;
+        syncCopyButton();
         render();
         button.textContent = '重新分析';
         setStatus('success', '已恢复上次分析');
@@ -250,6 +293,7 @@
     function render() {
       scheduledFrame = null;
       const version = ++renderVersion;
+      syncCopyButton();
       mathItems = [];
       try { result.innerHTML = markdown.render(answer); }
       catch { result.textContent = answer; }
@@ -295,6 +339,8 @@
       if (scheduledFrame != null) cancelAnimationFrame(scheduledFrame);
       scheduledFrame = null;
       answer = '';
+      syncCopyButton();
+      clearCopyStatus();
       renderVersion++;
       result.textContent = '';
       result.hidden = true;
@@ -344,6 +390,8 @@
       button.textContent = '取消';
       setStatus('loading', '正在获取题面…');
       answer = '';
+      syncCopyButton();
+      clearCopyStatus();
       result.hidden = true;
       const url = core.problemUrl(document, location.href);
       if (!url) { finish('error', '无法定位对应题面，请刷新提交页面后重试。'); return; }
@@ -396,6 +444,7 @@
         if (currentVersion !== verdictVersion) return;
         if (message?.type === 'DELTA' && typeof message.text === 'string') {
           answer += message.text;
+          syncCopyButton();
           scheduleRender();
         } else if (message?.type === 'DONE') {
           completed = true;

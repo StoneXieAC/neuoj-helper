@@ -4,12 +4,14 @@
 
 ## 安装与配置
 
-1. 下载对应的发行包并解压。使用者无需安装 Node.js 或 npm：Chrome 114／Edge 114 或更新版本使用 `neuoj-helper-0.1.0-chromium.zip`，Firefox 128 或更新版本使用 `neuoj-helper-0.1.0-firefox.zip`。
+1. 下载对应的发行包并解压。使用者无需安装 Node.js 或 npm：Chrome 114／Edge 114 或更新版本使用 `neuoj-helper-0.1.0-chromium.zip`，Firefox 128 或更新版本使用 `neuoj-helper-0.1.0-firefox.zip`。两份压缩包均用于本地调试。
    - Chrome：打开 `chrome://extensions/`，启用开发者模式，选择“加载已解压的扩展程序”，选中解压后的目录。
    - Edge：打开 `edge://extensions/`，启用开发人员模式，选择“加载解压缩的扩展”，选中解压后的目录。
    - Firefox：打开 `about:debugging#/runtime/this-firefox`，选择“临时载入附加组件”，选中解压后目录中的 `manifest.json`。未签名的临时扩展会在 Firefox 关闭后卸载；重新启动后需再次载入。
-2. 点击工具栏中的插件图标或提交页分析面板角落的设置图标。在弹窗左侧选择“API 设置”或“提示词设置”，填写配置后点击“确定”；首次使用时会请求接口域名权限。
+2. 点击工具栏中的插件图标或提交页分析面板右侧的设置图标。在弹窗左侧选择“API 设置”或“提示词设置”，填写配置后点击“确定”；首次使用时会请求接口域名权限。
 3. 打开直连或 WebVPN 的 NEUOJ 提交详情页。非 AC 且已评测完成时，点击页面上的“分析错误”。
+
+分析面板最右侧的复制图标可复制当前回答的 Markdown 原文，包括标记、换行和公式源码；流式生成中的内容及恢复的缓存回答也可复制。尚无回答时按钮不可用。
 
 默认接口为 `https://api.deepseek.com`，默认模型为 `deepseek-flash`，思考等级默认为空。思考等级可在设置页自由填写；清空并保存后，请求中不会发送 `reasoning_effort`，以兼容不支持该参数的接口。Base URL 可以带 `/v1`，扩展会拼接 `/chat/completions`。支持 HTTPS，以及 `localhost` 或 `127.0.0.1` 上的 HTTP 服务。API Key 存在浏览器的本机扩展存储中，不会插入到网页或分析面板。
 
@@ -29,4 +31,4 @@
 
 开发者在仓库根目录运行 `npm ci && npm test`，再运行 `npm run build:releases`，即可在 `dist/releases/` 得到两份发行包。单独运行 `npm run build:firefox` 可生成 Firefox 的未压缩目录。测试覆盖两类提交页识别、WA/CE/RE/TLE/MLE/AC 的筛选、截断预算、思考等级设置、后台请求和错误处理，以及 Firefox 清单生成与存储 API 兼容。修改扩展文件后重新构建发行包，并在各浏览器的扩展管理页重新加载。
 
-在 Edge 和 Firefox 分别打开直连与 WebVPN 提交页，核对分析面板、设置窗口、接口域名授权、连接测试、分析结果和刷新后的缓存恢复。直连页需要在校园网内验收。
+在 Chrome 和 Firefox 分别打开直连与 WebVPN 提交页，核对分析面板的设置与复制按钮、接口域名授权、连接测试、分析结果和刷新后的缓存恢复。直连页需要在校园网内验收。
