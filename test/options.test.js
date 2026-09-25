@@ -9,7 +9,7 @@ const html = fs.readFileSync(path.join(__dirname, '../extension/src/options.html
 const script = fs.readFileSync(path.join(__dirname, '../extension/src/options.js'), 'utf8');
 const defaultPrompt = fs.readFileSync(path.join(__dirname, '../extension/prompts/system.md'), 'utf8').trim();
 
-async function setup(granted = true, stored = {}, saveFails = false, connectionResponse = { ok: true }) {
+async function setup(granted = true, stored = {}, saveFails = false, connectionResponse = { ok: true }, supportsAccessLevel = true) {
   const dom = new JSDOM(html, { url: 'chrome-extension://example/src/options.html' });
   let requested;
   let saved;
@@ -19,7 +19,7 @@ async function setup(granted = true, stored = {}, saveFails = false, connectionR
     runtime: { getURL(name) { return `chrome-extension://example/${name}`; },
       sendMessage(value, callback) { tested = value; callback(connectionResponse); } },
     permissions: { async request(value) { requested = value; return granted; } },
-    storage: { local: { async get() { return stored; }, async setAccessLevel() {}, async set(value) {
+    storage: { local: { async get() { return stored; }, ...(supportsAccessLevel ? { async setAccessLevel() {} } : {}), async set(value) {
       if (saveFails) throw new Error('磁盘不可用');
       saved = value;
     } } }
@@ -30,6 +30,15 @@ async function setup(granted = true, stored = {}, saveFails = false, connectionR
   return { document: dom.window.document, get requested() { return requested; }, get saved() { return saved; },
     get tested() { return tested; }, get closed() { return closed; } };
 }
+
+test('不支持存储访问级别 API 时仍可保存设置', async () => {
+  const app = await setup(true, {}, false, { ok: true }, false);
+  app.document.getElementById('apiKey').value = 'secret';
+  app.document.getElementById('settings').dispatchEvent(new app.document.defaultView.Event('submit', { cancelable: true }));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(app.saved.apiKey, 'secret');
+  assert.equal(app.closed, true);
+});
 
 test('设置页使用默认 DeepSeek 配置并按域名申请权限', async () => {
   const app = await setup();

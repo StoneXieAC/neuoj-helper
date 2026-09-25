@@ -13,7 +13,7 @@ const jsonResponse = (payload, status = 200) => new Response(JSON.stringify(payl
 const sseResponse = stream => new Response(stream, { headers: { 'content-type': 'text/event-stream' } });
 const bytes = text => new TextEncoder().encode(text);
 
-function setup({ granted = true, apiKey = 'test-secret', reasoningEffort, customPrompt, respond = () => jsonResponse({ choices: [{ message: { content: '分析结果' } }] }), timeout = false, localStore, failResultWrite = false } = {}) {
+function setup({ granted = true, apiKey = 'test-secret', reasoningEffort, customPrompt, respond = () => jsonResponse({ choices: [{ message: { content: '分析结果' } }] }), timeout = false, localStore, failResultWrite = false, supportsAccessLevel = true } = {}) {
   let messageListener;
   let connectListener;
   let actionClicked;
@@ -47,7 +47,7 @@ function setup({ granted = true, apiKey = 'test-secret', reasoningEffort, custom
       async update(id, options) { if (!windows.has(id)) throw Error('window closed'); if (options.focused) optionsFocused++; return windows.get(id); }
     },
     storage: {
-      local: { async setAccessLevel() {}, async get() { return local; }, async set(value) {
+      local: { ...(supportsAccessLevel ? { async setAccessLevel() {} } : {}), async get() { return local; }, async set(value) {
         if (failResultWrite && Object.hasOwn(value, 'analysisResults')) throw new Error('存储写入失败');
         Object.assign(local, value);
       } },
@@ -108,6 +108,13 @@ function setup({ granted = true, apiKey = 'test-secret', reasoningEffort, custom
     get loggedErrors() { return loggedErrors; }
   };
 }
+
+test('不支持存储访问级别 API 时仍可分析并恢复缓存', async () => {
+  const app = setup({ supportsAccessLevel: false });
+  assert.equal((await app.open().done).type, 'DONE');
+  assert.equal((await app.getCached()).answer, '分析结果');
+  assert.equal(app.requests.length, 1);
+});
 
 test('提交页齿轮与工具栏共用设置弹窗，重复打开时聚焦，关闭后可重建', async () => {
   const app = setup();
@@ -195,6 +202,36 @@ test('缺少权限、密钥或页面校验失败时不请求模型', async () =>
     assert.equal((await app.open(undefined, from).done).type, 'ERROR');
     assert.equal(app.requests.length, 0);
   }
+});
+
+test('图片题以多模态内容发送，流式回退保留全部图片', async () => {
+  const images = ['data:image/png;base64,iVBORw0KGgo=', 'data:image/jpeg;base64,/9j/'];
+  const app = setup({ respond: (_, __, count) => count === 1
+    ? jsonResponse({ error: { message: 'stream is unsupported' } }, 400)
+    : jsonResponse({ choices: [{ message: { content: '分析结果' } }] }) });
+  assert.equal((await app.open({ type: 'ANALYZE', prompt: '题面：[题图 1][题图 2]', images }).done).type, 'DONE');
+  assert.equal(app.requests.length, 2);
+  for (const request of app.requests) {
+    const content = JSON.parse(request.options.body).messages[1].content;
+    assert.deepEqual(content, [
+      { type: 'text', text: '题面：[题图 1][题图 2]' },
+      { type: 'text', text: '题图 1：' }, { type: 'image_url', image_url: { url: images[0] } },
+      { type: 'text', text: '题图 2：' }, { type: 'image_url', image_url: { url: images[1] } }
+    ]);
+  }
+});
+
+test('图片数据无效及模型不支持图片时显示错误且不缓存', async () => {
+  const invalid = setup();
+  const run = invalid.open({ type: 'ANALYZE', prompt: '题面', images: ['https://example.com/a.png'] });
+  assert.equal((await run.done).type, 'ERROR');
+  assert.equal(invalid.requests.length, 0);
+
+  const unsupported = setup({ respond: () => jsonResponse({ error: { message: 'model does not support image input' } }, 400) });
+  const rejected = unsupported.open({ type: 'ANALYZE', prompt: '题面', images: ['data:image/png;base64,iVBORw0KGgo='] });
+  assert.equal((await rejected.done).type, 'ERROR');
+  assert.match(rejected.events.at(-1).error, /model does not support image input/);
+  assert.equal((await unsupported.getCached()).answer, null);
 });
 
 test('明确拒绝 stream 时重试非流式；忽略 stream 的接口直接显示 JSON', async () => {

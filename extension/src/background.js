@@ -2,6 +2,9 @@
 
 const DEFAULTS = { baseUrl: 'https://api.deepseek.com', model: 'deepseek-flash' };
 const MAX_ANSWER = 200000;
+const MAX_IMAGES = 8;
+const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+const MAX_TOTAL_IMAGE_BYTES = 10 * 1024 * 1024;
 const SETTINGS_WINDOW_KEY = 'settingsWindowId';
 const RESULTS_KEY = 'analysisResults';
 const MAX_RESULTS = 10;
@@ -36,7 +39,9 @@ function validateSender(sender) {
 }
 
 async function restrictStorage() {
-  await chrome.storage.local.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' });
+  if (typeof chrome.storage.local.setAccessLevel === 'function') {
+    await chrome.storage.local.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' });
+  }
 }
 
 function submissionKey(raw) {
@@ -217,10 +222,21 @@ async function consumeEvents(response, emit, resetIdle, apiKey) {
   return answer;
 }
 
-async function analyze(prompt, sender, emit, controller, resetIdle) {
+async function analyze(prompt, images, sender, emit, controller, resetIdle) {
   validateSender(sender);
   if (typeof prompt !== 'string' || !prompt.trim() || prompt.length > 24000) {
     throw new Error('分析内容无效或超过长度限制。');
+  }
+  if (images != null && (!Array.isArray(images) || images.length > MAX_IMAGES)) {
+    throw new Error('题图数量无效或超过限制。');
+  }
+  let totalImageBytes = 0;
+  for (const image of images || []) {
+    const match = /^data:image\/(?:png|jpeg|gif|webp);base64,([A-Za-z0-9+/]+={0,2})$/.exec(image);
+    if (!match || match[1].length % 4 !== 0) throw new Error('题图数据格式无效。');
+    const size = match[1].length * 3 / 4 - (match[1].endsWith('==') ? 2 : match[1].endsWith('=') ? 1 : 0);
+    totalImageBytes += size;
+    if (size > MAX_IMAGE_BYTES || totalImageBytes > MAX_TOTAL_IMAGE_BYTES) throw new Error('题图超过图片大小限制。');
   }
   await restrictStorage();
   const settings = await chrome.storage.local.get(['baseUrl', 'apiKey', 'model', 'reasoningEffort', 'systemPrompt']);
@@ -239,7 +255,10 @@ async function analyze(prompt, sender, emit, controller, resetIdle) {
   if (typeof systemPrompt !== 'string' || !systemPrompt.trim() || systemPrompt.length > 10000) {
     throw new Error('系统提示词无效，请在插件设置中检查。');
   }
-  const messages = [{ role: 'system', content: systemPrompt }, { role: 'user', content: prompt }];
+  const userContent = images?.length ? [{ type: 'text', text: prompt },
+    ...images.flatMap((image, index) => [{ type: 'text', text: `题图 ${index + 1}：` },
+      { type: 'image_url', image_url: { url: image } }])] : prompt;
+  const messages = [{ role: 'system', content: systemPrompt }, { role: 'user', content: userContent }];
 
   async function request(stream) {
     resetIdle();
@@ -361,7 +380,7 @@ chrome.runtime.onConnect.addListener(port => {
       try { port.postMessage(event); }
       catch { disconnected = true; controller.abort(); }
     };
-    analyze(message.prompt, port.sender, text => post({ type: 'DELTA', text }), controller, timeout.resetIdle)
+    analyze(message.prompt, message.images, port.sender, text => post({ type: 'DELTA', text }), controller, timeout.resetIdle)
       .then(async answer => {
         if (!disconnected) {
           try {

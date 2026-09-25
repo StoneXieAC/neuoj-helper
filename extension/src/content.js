@@ -2,6 +2,79 @@
   'use strict';
   const core = globalThis.NEUOJCore;
   if (!core || !globalThis.markdownit || !core.isSubmissionUrl(location.href)) return;
+  const MAX_IMAGES = 8;
+  const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+  const MAX_TOTAL_IMAGE_BYTES = 10 * 1024 * 1024;
+  function imageMime(bytes) {
+    if (bytes.length >= 8 && [137, 80, 78, 71, 13, 10, 26, 10].every((value, index) => bytes[index] === value)) return 'image/png';
+    if (bytes.length >= 3 && bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255) return 'image/jpeg';
+    const header = String.fromCharCode(...bytes.subarray(0, 12));
+    if (header.startsWith('GIF87a') || header.startsWith('GIF89a')) return 'image/gif';
+    if (header.startsWith('RIFF') && header.slice(8, 12) === 'WEBP') return 'image/webp';
+    return null;
+  }
+  async function loadImages(sources, pageUrl, signal) {
+    if (sources.length > MAX_IMAGES) throw new Error(`题图超过 ${MAX_IMAGES} 张，无法完整分析。`);
+    const images = [];
+    let total = 0;
+    for (const [index, src] of sources.entries()) {
+      const label = `题图 ${index + 1}`;
+      let target;
+      try { target = new URL(src); } catch { throw new Error(`${label} 地址无效。`); }
+      if (target.protocol !== 'https:' || target.origin !== new URL(pageUrl).origin || target.username || target.password) {
+        throw new Error(`${label} 地址不属于题目网站，无法安全读取。`);
+      }
+      let response;
+      try { response = await fetch(target.href, { credentials: 'same-origin', signal }); }
+      catch (error) { if (signal.aborted) throw error; throw new Error(`${label} 下载失败。`); }
+      if (!response.ok || !response.url || response.url !== target.href) throw new Error(`${label} 下载失败或发生跳转。`);
+      const size = Number(response.headers?.get('content-length'));
+      if (size > MAX_IMAGE_BYTES || total + size > MAX_TOTAL_IMAGE_BYTES) {
+        await response.body?.cancel().catch(() => {});
+        throw new Error(`${label} 超过图片大小限制。`);
+      }
+      if (!response.body?.getReader) throw new Error(`${label} 读取失败。`);
+      const reader = response.body.getReader();
+      const chunks = [];
+      let length = 0;
+      let tooLarge = false;
+      let failed = false;
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          length += value.byteLength;
+          if (length > MAX_IMAGE_BYTES || total + length > MAX_TOTAL_IMAGE_BYTES) {
+            tooLarge = true;
+            break;
+          }
+          chunks.push(value);
+        }
+      } catch (error) {
+        failed = true;
+        if (signal.aborted) throw error;
+        throw new Error(`${label} 读取失败。`);
+      } finally {
+        if (tooLarge || failed || signal.aborted) await reader.cancel().catch(() => {});
+        reader.releaseLock();
+      }
+      if (signal.aborted) throw new Error(`${label} 下载已取消。`);
+      if (tooLarge) throw new Error(`${label} 超过图片大小限制。`);
+      if (!length) throw new Error(`${label} 为空。`);
+      const bytes = new Uint8Array(length);
+      let offset = 0;
+      for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+      total += length;
+      const mime = imageMime(bytes);
+      if (!mime) throw new Error(`${label} 不是支持的 PNG、JPEG、GIF 或 WebP 图片。`);
+      let binary = '';
+      for (let offset = 0; offset < bytes.length; offset += 8192) {
+        binary += String.fromCharCode(...bytes.subarray(offset, offset + 8192));
+      }
+      images.push(`data:${mime};base64,${btoa(binary)}`);
+    }
+    return images;
+  }
   const markdown = globalThis.markdownit({ html: false, linkify: false, breaks: true });
   markdown.renderer.rules.image = (tokens, index) => markdown.utils.escapeHtml(tokens[index].content);
   const validateLink = markdown.validateLink.bind(markdown);
@@ -236,8 +309,9 @@
           }
           const html = await response.text();
           if (controller.signal.aborted) throw new Error('题面请求已取消。');
-          const parsed = core.extractProblem(new DOMParser().parseFromString(html, 'text/html'));
+          const parsed = core.extractProblem(new DOMParser().parseFromString(html, 'text/html'), url);
           if (!parsed) throw new Error('题面页面中未找到正文。');
+          parsed.imageData = await loadImages(parsed.images || [], url, controller.signal);
           return parsed;
         })(), deadline]);
       } catch (error) {
@@ -280,7 +354,7 @@
       heartbeat = setInterval(() => {
         try { port.postMessage({ type: 'PING' }); } catch { /* 断线由 onDisconnect 处理。 */ }
       }, 20000);
-      try { port.postMessage({ type: 'ANALYZE', prompt }); }
+      try { port.postMessage({ type: 'ANALYZE', prompt, images: problem.imageData }); }
       catch (error) { completed = true; port.disconnect(); finish('error', error.message || '无法发送分析请求。'); }
     });
     panel.append(top, result);

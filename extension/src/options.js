@@ -147,7 +147,9 @@ form.addEventListener('submit', async event => {
   try {
     const granted = await chrome.permissions.request({ origins: [origin] });
     if (!granted) { selectCategory('api'); message.textContent = '未获得接口域名权限，设置未保存。'; return; }
-    await chrome.storage.local.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' });
+    if (typeof chrome.storage.local.setAccessLevel === 'function') {
+      await chrome.storage.local.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' });
+    }
     await chrome.storage.local.set({ baseUrl, apiKey, model, reasoningEffort,
       systemPrompt: systemPrompt.trim() === defaultPrompt ? null : systemPrompt });
     window.close();

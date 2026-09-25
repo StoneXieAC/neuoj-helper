@@ -61,6 +61,25 @@
     return String(value || '').replace(/\r\n?/g, '\n').replace(/\u00a0/g, ' ').trim();
   }
 
+  function problemImageUrl(raw, pageUrl) {
+    const page = new URL(pageUrl);
+    const target = new URL(raw, page);
+    if (page.hostname === 'webvpn.neu.edu.cn') {
+      if (target.hostname === 'oj.neu.edu.cn' && target.protocol === 'https:') {
+        return `${page.origin}${VPN_PREFIX}${target.pathname}${target.search}`;
+      }
+      if (target.origin === page.origin && !target.pathname.startsWith(`${VPN_PREFIX}/`) &&
+        !target.pathname.startsWith('/https/')) {
+        target.pathname = `${VPN_PREFIX}${target.pathname}`;
+      }
+      if (target.origin === page.origin && !target.pathname.startsWith(`${VPN_PREFIX}/`)) {
+        throw new Error('图片不属于当前 NEUOJ 代理地址。');
+      }
+    }
+    target.hash = '';
+    return target.href;
+  }
+
   function nodeText(node) {
     if (!node) return '';
     const parts = [];
@@ -77,7 +96,7 @@
     return clean(parts.join(''));
   }
 
-  function problemText(node) {
+  function problemText(node, images = null, pageUrl = '') {
     if (!node) return '';
     const parts = [];
     function walk(current) {
@@ -85,6 +104,16 @@
       if (current.nodeType !== 1) return;
       const tag = current.tagName.toLowerCase();
       if (['script', 'style', 'button', 'svg'].includes(tag)) return;
+      if (tag === 'img') {
+        if (images) {
+          const raw = current.getAttribute('src');
+          let src = null;
+          try { if (raw) src = problemImageUrl(raw, pageUrl); } catch { /* 无效图片地址留待读取阶段报错。 */ }
+          images.push(src);
+          parts.push(` [题图 ${images.length}] `);
+        }
+        return;
+      }
       if (current.hasAttribute('data-math')) {
         parts.push(` $${current.getAttribute('data-math').trim()}$ `);
         return;
@@ -117,13 +146,14 @@
     return lines.join('\n');
   }
 
-  function extractProblem(doc) {
+  function extractProblem(doc, pageUrl = '') {
     const content = doc.getElementById('problem-content-vditor');
-    const body = problemText(content);
+    const images = [];
+    const body = problemText(content, images, pageUrl);
     if (!body) return null;
     const column = content.closest('.col-7');
     const title = clean(column?.querySelector('.card.mb-2 .card-header .nav-link strong')?.textContent);
-    return { title, body, inputExample: problemText(doc.getElementById('example-input')),
+    return { title, body, ...(images.length ? { images } : {}), inputExample: problemText(doc.getElementById('example-input')),
       outputExample: problemText(doc.getElementById('example-output')) };
   }
 

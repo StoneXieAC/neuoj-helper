@@ -2,8 +2,10 @@
   "name": "neuoj-helper",
   "version": "0.1.0",
   "private": true,
-  "description": "NEUOJ 提交错误分析 Chrome 插件",
+  "description": "NEUOJ 提交错误分析浏览器扩展",
   "scripts": {
+    "build:firefox": "node scripts/build-firefox.js",
+    "build:releases": "node scripts/build-releases.js",
     "test": "node --test"
   },
   "devDependencies": {

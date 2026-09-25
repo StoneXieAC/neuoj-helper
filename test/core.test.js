@@ -161,6 +161,31 @@ test('题面表格保留单元格边界和行边界', () => {
   assert.match(prompt, /输入 \| 输出\n1 2 \| 3 4/);
 });
 
+test('题面图片按正文顺序标记并以实际题目地址解析，忽略页面其他图片', () => {
+  const html = '<img src="/logo.png"><div id="problem-content-vditor"><p>左侧<img src="./a.jpeg">右侧<img src="../b.png"></p></div>';
+  for (const pageUrl of [directProblem, vpnProblem]) {
+    const doc = new JSDOM(html).window.document;
+    const problem = core.extractProblem(doc, pageUrl);
+    assert.match(problem.body, /左侧 \[题图 1\] 右侧 \[题图 2\]/);
+    assert.deepEqual(problem.images, [new URL('./a.jpeg', pageUrl).href, new URL('../b.png', pageUrl).href]);
+  }
+});
+
+test('WebVPN 题面中的站点根路径和直连图片地址转换为代理地址', () => {
+  const doc = new JSDOM('<div id="problem-content-vditor"><img src="/storage/a.png"><img src="https://oj.neu.edu.cn/storage/b.jpg"></div>').window.document;
+  const problem = core.extractProblem(doc, vpnProblem);
+  const prefix = new URL(vpnProblem).pathname.split('/training/')[0];
+  assert.deepEqual(problem.images, [
+    `https://webvpn.neu.edu.cn${prefix}/storage/a.png`,
+    `https://webvpn.neu.edu.cn${prefix}/storage/b.jpg`
+  ]);
+});
+
+test('WebVPN 题面拒绝其他代理前缀下的图片', () => {
+  const doc = new JSDOM('<div id="problem-content-vditor"><img src="/https/other-token/private.png"></div>').window.document;
+  assert.deepEqual(core.extractProblem(doc, vpnProblem).images, [null]);
+});
+
 test('超长题面保留截断标记、测试点证据和源码', () => {
   const report = core.extractSubmission(page({ cases: caseHtml(1, '答案错误', 'Judge: 42<br>Team: 24') }), direct);
   const prompt = core.buildPrompt(report, { title: '长题目', body: '要求'.repeat(10000),

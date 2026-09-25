@@ -1,14 +1,17 @@
 # NEUOJ 小助手
 
-适用于 Chrome Manifest V3 的本地插件。它在 NEUOJ 提交详情页识别非 AC 结果，点击“分析错误”后读取对应题面、源码与有价值的评测证据，并调用用户配置的 OpenAI-compatible Chat Completions 接口。
+适用于 Chrome、Edge 和 Firefox 的 Manifest V3 本地扩展。它在 NEUOJ 提交详情页识别非 AC 结果，点击“分析错误”后读取对应题面、源码与有价值的评测证据，并调用用户配置的 OpenAI-compatible Chat Completions 接口。
 
 ## 安装与配置
 
-1. 使用 Chrome 114 或更新版本，打开 `chrome://extensions/`，启用开发者模式，选择“加载已解压的扩展程序”，选中本仓库的 `extension/` 目录。
+1. 下载对应的发行包并解压。使用者无需安装 Node.js 或 npm：Chrome 114／Edge 114 或更新版本使用 `neuoj-helper-0.1.0-chromium.zip`，Firefox 128 或更新版本使用 `neuoj-helper-0.1.0-firefox.zip`。
+   - Chrome：打开 `chrome://extensions/`，启用开发者模式，选择“加载已解压的扩展程序”，选中解压后的目录。
+   - Edge：打开 `edge://extensions/`，启用开发人员模式，选择“加载解压缩的扩展”，选中解压后的目录。
+   - Firefox：打开 `about:debugging#/runtime/this-firefox`，选择“临时载入附加组件”，选中解压后目录中的 `manifest.json`。未签名的临时扩展会在 Firefox 关闭后卸载；重新启动后需再次载入。
 2. 点击工具栏中的插件图标或提交页分析面板角落的设置图标。在弹窗左侧选择“API 设置”或“提示词设置”，填写配置后点击“确定”；首次使用时会请求接口域名权限。
 3. 打开直连或 WebVPN 的 NEUOJ 提交详情页。非 AC 且已评测完成时，点击页面上的“分析错误”。
 
-默认接口为 `https://api.deepseek.com`，默认模型为 `deepseek-flash`，思考等级默认为 `low`。思考等级可在设置页自由填写；清空并保存后，请求中不会发送 `reasoning_effort`，以兼容不支持该参数的接口。Base URL 可以带 `/v1`，插件会拼接 `/chat/completions`。支持 HTTPS，以及 `localhost` 或 `127.0.0.1` 上的 HTTP 服务。API Key 存在 Chrome 本机扩展存储中，不会插入到网页或分析面板。
+默认接口为 `https://api.deepseek.com`，默认模型为 `deepseek-flash`，思考等级默认为空。思考等级可在设置页自由填写；清空并保存后，请求中不会发送 `reasoning_effort`，以兼容不支持该参数的接口。Base URL 可以带 `/v1`，扩展会拼接 `/chat/completions`。支持 HTTPS，以及 `localhost` 或 `127.0.0.1` 上的 HTTP 服务。API Key 存在浏览器的本机扩展存储中，不会插入到网页或分析面板。
 
 “提示词设置”默认显示扩展内置的系统提示词。可以修改，也可以点击“恢复默认”将编辑框还原；两种操作都要点击“确定”才会保存。成功保存后设置窗口自动关闭。分析完成的结果保存在本机，返回或刷新同一提交页时会直接恢复；WebVPN 代理标识变化不影响同一提交的缓存匹配。只保留最近 10 个提交的结果，点击“重新分析”可更新缓存。若缓存保存失败，页面会保留当次分析文字并提示刷新后可能无法恢复。
 
@@ -24,4 +27,6 @@
 
 ## 验证
 
-在仓库根目录运行 `npm ci && npm test`。测试覆盖两类提交页识别、WA/CE/RE/TLE/MLE/AC 的筛选、截断预算、思考等级设置，以及后台请求和错误处理。直连页需要在校园网内做实际验收；已用保存的 WebVPN 通用提交页核对 DOM 与题目链接。
+开发者在仓库根目录运行 `npm ci && npm test`，再运行 `npm run build:releases`，即可在 `dist/releases/` 得到两份发行包。单独运行 `npm run build:firefox` 可生成 Firefox 的未压缩目录。测试覆盖两类提交页识别、WA/CE/RE/TLE/MLE/AC 的筛选、截断预算、思考等级设置、后台请求和错误处理，以及 Firefox 清单生成与存储 API 兼容。修改扩展文件后重新构建发行包，并在各浏览器的扩展管理页重新加载。
+
+在 Edge 和 Firefox 分别打开直连与 WebVPN 提交页，核对分析面板、设置窗口、接口域名授权、连接测试、分析结果和刷新后的缓存恢复。直连页需要在校园网内验收。

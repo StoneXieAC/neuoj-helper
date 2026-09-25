@@ -54,7 +54,7 @@ function setup(status, optionsResponse = { ok: true }, fetchProblem = async () =
   } };
   const context = { globalThis: { NEUOJCore: core, markdownit }, location: dom.window.location,
     document: dom.window.document, chrome, MutationObserver: dom.window.MutationObserver,
-    DOMParser: dom.window.DOMParser, fetch: (...args) => { fetchCount++; return fetchProblem(...args); }, URL,
+    DOMParser: dom.window.DOMParser, fetch: (...args) => { fetchCount++; return fetchProblem(...args); }, URL, btoa,
     setTimeout: timers?.setTimeout || setTimeout, clearTimeout: timers?.clearTimeout || clearTimeout,
     setInterval, clearInterval, AbortController,
     requestAnimationFrame: fn => setTimeout(fn, 0), cancelAnimationFrame: clearTimeout };
@@ -109,6 +109,131 @@ test('WA 点击后才发送提示词，收到首段即显示 Markdown，完成�
   assert.equal(status.textContent, '分析完成');
   assert.ok(status.querySelector('.status-icon[aria-hidden="true"]'));
   assert.equal(status.querySelector('.status-text').textContent, '分析完成');
+});
+
+test('图片题点击后按题面顺序读取图片，按真实格式发送数据', async () => {
+  const png = Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10, 1]);
+  const jpeg = Uint8Array.from([255, 216, 255, 1]);
+  const imageUrls = [new URL('./a.jpeg', problemUrl).href, new URL('./b.jpg', problemUrl).href];
+  const requested = [];
+  const fetchProblem = async (target, options) => {
+    requested.push([target, options]);
+    if (target === problemUrl) return { ok: true, url: target, text: async () =>
+      `<div id="problem-content-vditor"><p>先看<img src="./a.jpeg">再看<img src="./b.jpg"></p></div>` };
+    const bytes = target === imageUrls[0] ? png : jpeg;
+    return { ok: true, url: target, headers: { get: () => null }, body: new Response(bytes).body };
+  };
+  const app = setup('答案错误', { ok: true }, fetchProblem);
+  assert.equal(app.fetchCount, 0);
+  app.document.getElementById('neuoj-helper-root').shadowRoot.querySelector('button').click();
+  await flush();
+  await flush();
+  assert.deepEqual(requested.map(item => item[0]), [problemUrl, ...imageUrls]);
+  assert.equal(requested[1][1].credentials, 'same-origin');
+  assert.match(app.sent.prompt, /先看 \[题图 1\] 再看 \[题图 2\]/);
+  assert.deepEqual(Array.from(app.sent.images), [
+    `data:image/png;base64,${Buffer.from(png).toString('base64')}`,
+    `data:image/jpeg;base64,${Buffer.from(jpeg).toString('base64')}`
+  ]);
+  app.emit({ type: 'DONE' });
+});
+
+test('直连题面图片使用直连地址读取', async () => {
+  const target = new URL('./diagram.png', directGeneralProblemUrl).href;
+  const png = Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10]);
+  const requested = [];
+  const fetchProblem = async (requestedUrl, options) => {
+    requested.push([requestedUrl, options]);
+    return requestedUrl === directGeneralProblemUrl
+      ? { ok: true, url: requestedUrl, text: async () => '<div id="problem-content-vditor"><img src="./diagram.png"></div>' }
+      : { ok: true, url: requestedUrl, headers: { get: () => null }, body: new Response(png).body };
+  };
+  const app = setup('答案错误', { ok: true }, fetchProblem, directGeneralUrl, directGeneralProblemUrl);
+  app.document.getElementById('neuoj-helper-root').shadowRoot.querySelector('button').click();
+  await flush();
+  await flush();
+  assert.deepEqual(requested.map(item => item[0]), [directGeneralProblemUrl, target]);
+  assert.equal(requested[1][1].credentials, 'same-origin');
+  assert.match(app.sent.images[0], /^data:image\/png;base64,/);
+  app.emit({ type: 'DONE' });
+});
+
+test('题图读取失败和超限时停止分析并提示错误', async () => {
+  for (const [imageResponse, message] of [
+    [{ ok: false, url: new URL('./bad.png', problemUrl).href }, /题图 1 下载失败/],
+    [{ ok: true, url: new URL('./bad.png', problemUrl).href,
+      headers: { get: () => String(6 * 1024 * 1024) } }, /题图 1 超过图片大小限制/]
+  ]) {
+    const fetchProblem = async target => target === problemUrl
+      ? { ok: true, url: target, text: async () => '<div id="problem-content-vditor"><p><img src="./bad.png"></p></div>' }
+      : imageResponse;
+    const app = setup('答案错误', { ok: true }, fetchProblem);
+    app.document.getElementById('neuoj-helper-root').shadowRoot.querySelector('button').click();
+    await flush();
+    assert.equal(app.sent, undefined);
+    assert.match(app.document.getElementById('neuoj-helper-root').shadowRoot.querySelector('.status').textContent, message);
+  }
+});
+
+test('无 Content-Length 的超大题图在读取中止并取消数据流', async () => {
+  let canceled = false;
+  let reads = 0;
+  const body = new ReadableStream({
+    pull(controller) {
+      reads++;
+      controller.enqueue(reads === 1 ? Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10])
+        : new Uint8Array(5 * 1024 * 1024));
+    },
+    cancel() { canceled = true; }
+  });
+  const imageUrl = new URL('./large.png', problemUrl).href;
+  const fetchProblem = async target => target === problemUrl
+    ? { ok: true, url: target, text: async () => '<div id="problem-content-vditor"><img src="./large.png"></div>' }
+    : { ok: true, url: imageUrl, headers: { get: () => null }, body };
+  const app = setup('答案错误', { ok: true }, fetchProblem);
+  const shadow = app.document.getElementById('neuoj-helper-root').shadowRoot;
+  shadow.querySelector('button').click();
+  await flush();
+  await flush();
+  assert.equal(canceled, true);
+  assert.equal(app.sent, undefined);
+  assert.match(shadow.querySelector('.status').textContent, /超过图片大小限制/);
+});
+
+test('WebVPN 其他代理前缀的题图不会被请求或发送', async () => {
+  const fetchProblem = async target => ({ ok: true, url: target,
+    text: async () => '<div id="problem-content-vditor"><img src="/https/other-token/private.png"></div>' });
+  const app = setup('答案错误', { ok: true }, fetchProblem);
+  const shadow = app.document.getElementById('neuoj-helper-root').shadowRoot;
+  shadow.querySelector('button').click();
+  await flush();
+  assert.equal(app.fetchCount, 1);
+  assert.equal(app.sent, undefined);
+  assert.match(shadow.querySelector('.status').textContent, /题图 1 地址无效/);
+});
+
+test('题图下载超时会取消请求并允许重新分析', async () => {
+  let expire;
+  let imageSignal;
+  const timers = {
+    setTimeout(fn, delay) { if (delay === 30000) { expire = fn; return 123456; } return setTimeout(fn, delay); },
+    clearTimeout(id) { if (id !== 123456) clearTimeout(id); }
+  };
+  const fetchProblem = async (target, options) => target === problemUrl
+    ? { ok: true, url: target, text: async () => '<div id="problem-content-vditor"><img src="./a.png"></div>' }
+    : (imageSignal = options.signal, new Promise(() => {}));
+  const app = setup('答案错误', { ok: true }, fetchProblem, url, problemUrl, null, timers);
+  const shadow = app.document.getElementById('neuoj-helper-root').shadowRoot;
+  const button = shadow.querySelector('button');
+  button.click();
+  await flush();
+  assert.ok(imageSignal);
+  expire();
+  await flush();
+  assert.equal(imageSignal.aborted, true);
+  assert.equal(app.sent, undefined);
+  assert.equal(button.disabled, false);
+  assert.match(shadow.querySelector('.status').textContent, /超时/);
 });
 
 test('Contest 复数提交页点击后获取同比赛题面并发送分析', async () => {
