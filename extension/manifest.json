@@ -13,13 +13,13 @@
   "content_scripts": [
     {
       "matches": ["https://oj.neu.edu.cn/*", "https://webvpn.neu.edu.cn/*"],
-      "js": ["vendor/markdown-it.umd.min.js", "vendor/katex/katex.min.js", "vendor/texmath/texmath.js", "src/core.js", "src/content.js"],
+      "js": ["vendor/markdown-it.umd.min.js", "vendor/texmath/texmath.js", "src/mathjax-config.js", "vendor/mathjax/tex-svg.js", "src/core.js", "src/content.js"],
       "run_at": "document_idle"
     }
   ],
   "web_accessible_resources": [
     {
-      "resources": ["vendor/katex/katex.min.css", "vendor/katex/fonts/*", "vendor/texmath/texmath.css"],
+      "resources": ["vendor/texmath/texmath.css", "vendor/mathjax/ui/safe.js", "vendor/mathjax-newcm-font/svg/dynamic/*"],
       "matches": ["https://oj.neu.edu.cn/*", "https://webvpn.neu.edu.cn/*"]
     }
   ]

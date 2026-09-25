@@ -1,6 +1,4 @@
-/* style for html inside of browsers */
-.katex { font-size: 1em !important; } /* align KaTeX font-size to surrounding text */
-
+/* MathJax output keeps these elements from markdown-it-texmath in flow. */
 eq { display: inline-block; }
 eqn { display: block}
 section.eqno {

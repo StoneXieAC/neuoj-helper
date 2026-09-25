@@ -12,8 +12,8 @@
     "jsdom": "^26.1.0"
   },
   "dependencies": {
-    "katex": "0.18.9",
     "markdown-it": "15.0.2",
-    "markdown-it-texmath": "1.0.0"
+    "markdown-it-texmath": "1.0.0",
+    "mathjax": "4.1.3"
   }
 }

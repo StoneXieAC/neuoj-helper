@@ -5,7 +5,6 @@ const path = require('node:path');
 const vm = require('node:vm');
 const { JSDOM } = require('jsdom');
 const markdownit = require('markdown-it');
-const katex = require('katex');
 const texmath = require('markdown-it-texmath');
 const core = require('../extension/src/core.js');
 
@@ -78,7 +77,14 @@ function openPage(background, url) {
     connect() { modelRequests++; throw new Error('不应自动分析'); }
   } };
   vm.runInNewContext(contentScript, {
-    globalThis: { NEUOJCore: core, markdownit, katex, texmath }, location: dom.window.location,
+    globalThis: { NEUOJCore: core, markdownit, texmath, MathJax: {
+      startup: { promise: Promise.resolve() },
+      tex2svgPromise: async tex => {
+        const node = dom.window.document.createElement('mjx-container');
+        node.dataset.tex = tex;
+        return node;
+      }
+    } }, location: dom.window.location,
     document: dom.window.document, chrome, MutationObserver: dom.window.MutationObserver,
     DOMParser: dom.window.DOMParser, URL, setTimeout, setInterval, clearInterval,
     requestAnimationFrame: fn => setTimeout(fn, 0), cancelAnimationFrame: clearTimeout,
@@ -102,7 +108,8 @@ test('WebVPN 成功分析后重建后台和页面仍恢复本机缓存', async (
   await new Promise(resolve => setImmediate(resolve));
   const shadow = reloadedPage.document.getElementById('neuoj-helper-root').shadowRoot;
   assert.equal(shadow.querySelector('.result strong').textContent, '缓存结论');
-  assert.equal(shadow.querySelector('.result .katex-mathml annotation').textContent, 'x^2');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(shadow.querySelector('.result mjx-container').dataset.tex, 'x^2');
   assert.equal(shadow.querySelector('.status').textContent, '已恢复上次分析');
   assert.equal(reloadedPage.cacheRequests, 1);
   assert.equal(reloadedPage.modelRequests, 0);

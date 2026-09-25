@@ -76,11 +76,17 @@
     return images;
   }
   const markdown = globalThis.markdownit({ html: false, linkify: false, breaks: true });
-  if (globalThis.texmath && globalThis.katex) {
+  let mathItems = [];
+  if (globalThis.texmath) {
     markdown.use(globalThis.texmath, {
-      engine: globalThis.katex,
-      delimiters: ['dollars', 'brackets'],
-      katexOptions: { trust: false, throwOnError: false, strict: 'ignore', maxSize: 10, maxExpand: 1000 }
+      engine: {
+        renderToString(tex, options) {
+          const index = mathItems.length;
+          mathItems.push({ tex, displayMode: !!options.displayMode });
+          return `<span data-neuoj-math="${index}"></span>`;
+        }
+      },
+      delimiters: ['dollars', 'brackets']
     });
   }
   markdown.renderer.rules.image = (tokens, index) => markdown.utils.escapeHtml(tokens[index].content);
@@ -94,6 +100,32 @@
   let mounted = false;
   let observer;
 
+  async function typesetMath(placeholders, items, version, isCurrent) {
+    const mathjax = globalThis.MathJax;
+    try {
+      await mathjax.startup.promise;
+    } catch {
+      if (isCurrent(version)) {
+        for (const [index, placeholder] of placeholders.entries()) placeholder.textContent = items[index].tex;
+      }
+      return;
+    }
+    for (const [index, placeholder] of placeholders.entries()) {
+      if (!isCurrent(version)) return;
+      const item = items[index];
+      try {
+        const rendered = await mathjax.tex2svgPromise(item.tex, { display: item.displayMode });
+        if (!isCurrent(version)) return;
+        if (rendered.querySelector('[data-mml-node="merror"]')) throw new Error('无效公式');
+        for (const link of rendered.querySelectorAll('a')) link.replaceWith(...link.childNodes);
+        for (const unsafe of rendered.querySelectorAll('image, foreignObject')) unsafe.remove();
+        placeholder.replaceWith(rendered);
+      } catch {
+        if (isCurrent(version)) placeholder.textContent = item.tex;
+      }
+    }
+  }
+
   function mount() {
     if (mounted || !core.isSubmissionPage(document, location.href)) return false;
     const report = core.extractSubmission(document, location.href);
@@ -101,7 +133,7 @@
     const host = document.createElement('div');
     host.id = 'neuoj-helper-root';
     const shadow = host.attachShadow({ mode: 'open' });
-    for (const file of ['vendor/katex/katex.min.css', 'vendor/texmath/texmath.css']) {
+    for (const file of ['vendor/texmath/texmath.css']) {
       const stylesheet = document.createElement('link');
       stylesheet.rel = 'stylesheet';
       stylesheet.href = chrome.runtime.getURL(file);
@@ -132,7 +164,7 @@
       .status[data-state="error"] .status-icon::before { content:'×'; }
       @keyframes status-spin { to { transform:rotate(360deg); } }
       @media (prefers-reduced-motion:reduce) { .status[data-state="loading"] .status-icon { animation:none; } }
-      .result { margin:12px 0 0; border-top:1px solid #e2e8f0; padding-top:12px; overflow-wrap:anywhere; user-select:text; }
+      .result { margin:12px 0 0; border-top:1px solid #e2e8f0; padding-top:12px; overflow-wrap:anywhere; user-select:text; line-height:1.75; }
       .result > :first-child { margin-top:0; }
       .result > :last-child { margin-bottom:0; }
       .result p, .result ul, .result ol, .result blockquote, .result pre { margin:0 0 8px; }
@@ -143,6 +175,9 @@
       .result code { font:12px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace; }
       .result :not(pre) > code { padding:1px 3px; border-radius:3px; background:#f1f5f9; }
       .result a { color:#066fd1; }
+      .result mjx-container[jax="SVG"] { font-size:1em; }
+      .result mjx-container[jax="SVG"][display="true"] { display:block; margin:.7em 0; overflow-x:auto; overflow-y:hidden; }
+      .result mjx-container[jax="SVG"] > svg { max-width:none; }
     `;
     shadow.append(style);
     const panel = document.createElement('section');
@@ -195,6 +230,7 @@
     let heartbeat;
     let scheduledFrame;
     let answer = '';
+    let renderVersion = 0;
     let analysisStarted = false;
     let verdictStatus = report.status;
     let verdictVersion = 0;
@@ -213,9 +249,16 @@
     }
     function render() {
       scheduledFrame = null;
+      const version = ++renderVersion;
+      mathItems = [];
       try { result.innerHTML = markdown.render(answer); }
       catch { result.textContent = answer; }
       result.hidden = !answer;
+      const items = mathItems;
+      const placeholders = [...result.querySelectorAll('[data-neuoj-math]')];
+      if (placeholders.length) {
+        void typesetMath(placeholders, items, version, current => current === renderVersion);
+      }
     }
     function scheduleRender() {
       if (scheduledFrame != null) return;
@@ -252,6 +295,7 @@
       if (scheduledFrame != null) cancelAnimationFrame(scheduledFrame);
       scheduledFrame = null;
       answer = '';
+      renderVersion++;
       result.textContent = '';
       result.hidden = true;
       button.textContent = '分析错误';

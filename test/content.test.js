@@ -5,7 +5,6 @@ const vm = require('node:vm');
 const path = require('node:path');
 const { JSDOM } = require('jsdom');
 const markdownit = require('markdown-it');
-const katex = require('katex');
 const texmath = require('markdown-it-texmath');
 const core = require('../extension/src/core.js');
 
@@ -22,7 +21,22 @@ const problemHtml = '<div class="col-7"><div class="card mb-2"><div class="card-
 const contestProblemHtml = '<div class="col-7"><div class="card mb-2"><div class="card-header"><a class="nav-link"><strong>J - 状态转换</strong></a></div></div><div id="problem-content-vditor"><p>按规则转换状态。</p></div><div id="example-input">3</div><div id="example-output">7</div></div>';
 const flush = () => new Promise(resolve => setImmediate(resolve));
 
-function setup(status, optionsResponse = { ok: true }, fetchProblem = async () => ({ ok: true, url: problemUrl, text: async () => problemHtml }), pageUrl = url, linkedProblem = problemUrl, cachedAnswer = null, timers = null) {
+function createMathJax(dom) {
+  return {
+    startup: { promise: Promise.resolve() },
+    tex2svgPromise: async (tex, { display }) => {
+      if (tex.includes('\\notacommand')) throw new Error('无效公式');
+      const node = dom.window.document.createElement('mjx-container');
+      node.setAttribute('jax', 'SVG');
+      if (display) node.setAttribute('display', 'true');
+      node.dataset.tex = tex;
+      node.append(dom.window.document.createElementNS('http://www.w3.org/2000/svg', 'svg'));
+      return node;
+    }
+  };
+}
+
+function setup(status, optionsResponse = { ok: true }, fetchProblem = async () => ({ ok: true, url: problemUrl, text: async () => problemHtml }), pageUrl = url, linkedProblem = problemUrl, cachedAnswer = null, timers = null, mathjaxFactory = createMathJax) {
   const dom = new JSDOM(`<!doctype html><html><body><a href="${linkedProblem}">返回题目</a><div id="tabs-source-code"><button data-clipboard-text="int main(){}"></button></div>
     <div id="tabs-compile-info"><div class="card-header">编译成功</div></div>
     <div class="tab-content"><div id="tabs-testcase-judging"><div class="card"><div class="card-body"><div>#001 ${status}</div>
@@ -55,7 +69,9 @@ function setup(status, optionsResponse = { ok: true }, fetchProblem = async () =
       callback(optionsResponse);
     }
   } };
-  const context = { globalThis: { NEUOJCore: core, markdownit, katex, texmath }, location: dom.window.location,
+  const mathjax = mathjaxFactory(dom);
+  delete texmath.katex;
+  const context = { globalThis: { NEUOJCore: core, markdownit, texmath, MathJax: mathjax }, location: dom.window.location,
     document: dom.window.document, chrome, MutationObserver: dom.window.MutationObserver,
     DOMParser: dom.window.DOMParser, fetch: (...args) => { fetchCount++; return fetchProblem(...args); }, URL, btoa,
     setTimeout: timers?.setTimeout || setTimeout, clearTimeout: timers?.clearTimeout || clearTimeout,
@@ -67,6 +83,7 @@ function setup(status, optionsResponse = { ok: true }, fetchProblem = async () =
     get sent() { return sent; },
     get fetchCount() { return fetchCount; },
     get cacheRequests() { return cacheRequests; },
+    mathjax,
     emit(message) { receive(message); },
     disconnect() { disconnected(); }
   };
@@ -374,37 +391,83 @@ test('流式结果渲染四种公式，代码块保持原样，样式从扩展�
   const shadow = app.document.getElementById('neuoj-helper-root').shadowRoot;
   const stylesheets = [...shadow.querySelectorAll('link[rel="stylesheet"]')].map(link => link.href);
   assert.deepEqual(stylesheets, [
-    'chrome-extension://neuoj-helper/vendor/katex/katex.min.css',
     'chrome-extension://neuoj-helper/vendor/texmath/texmath.css'
   ]);
   shadow.querySelector('button').click();
   await flush();
   app.emit({ type: 'DELTA', text: '组合数 $\\bin' });
   await new Promise(resolve => setTimeout(resolve, 5));
-  assert.equal(shadow.querySelector('.result .katex'), null);
+  assert.equal(shadow.querySelector('.result mjx-container'), null);
   app.emit({ type: 'DELTA', text: 'om{n+m-1}{m}$，另有 \\(x^2\\)。\n\n$$\\frac{a}{b}$$\n\n\\[\\sum_{i=1}^{n}i\\]\n\n`$raw$`\n\n```text\n\\(raw\\)\n```' });
   app.emit({ type: 'DONE' });
+  await flush();
   const result = shadow.querySelector('.result');
-  const formulas = [...result.querySelectorAll('.katex-mathml annotation')].map(node => node.textContent);
+  const formulas = [...result.querySelectorAll('mjx-container')].map(node => node.dataset.tex);
   assert.deepEqual(formulas, ['\\binom{n+m-1}{m}', 'x^2', '\\frac{a}{b}', '\\sum_{i=1}^{n}i']);
-  assert.equal(result.querySelectorAll('.katex-display').length, 2);
+  assert.equal(result.querySelectorAll('mjx-container[display="true"]').length, 2);
   assert.equal(result.querySelector('p code').textContent, '$raw$');
   assert.match(result.querySelector('pre code').textContent, /\\\(raw\\\)/);
 });
 
-test('缓存中的公式重新进入页面后仍被渲染，无效公式不妨碍后续内容', () => {
+test('缓存中的公式重新进入页面后仍被渲染，无效公式不妨碍后续内容', async () => {
   const app = setup('答案错误', { ok: true }, undefined, url, problemUrl,
     '正确：$x^2$。无效：$\\notacommand$。结尾：**保留**');
   const result = app.document.getElementById('neuoj-helper-root').shadowRoot.querySelector('.result');
-  assert.equal(result.querySelector('.katex-mathml annotation').textContent, 'x^2');
+  await flush();
+  assert.equal(result.querySelector('mjx-container').dataset.tex, 'x^2');
   assert.match(result.textContent, /\\notacommand/);
   assert.equal(result.querySelector('strong').textContent, '保留');
 });
 
-test('直连提交页也渲染已缓存的公式', () => {
+test('直连提交页也渲染已缓存的公式', async () => {
   const app = setup('答案错误', { ok: true }, undefined, directGeneralUrl, directGeneralProblemUrl, '$\\binom{n}{m}$');
   const result = app.document.getElementById('neuoj-helper-root').shadowRoot.querySelector('.result');
-  assert.equal(result.querySelector('.katex-mathml annotation').textContent, '\\binom{n}{m}');
+  await flush();
+  assert.equal(result.querySelector('mjx-container').dataset.tex, '\\binom{n}{m}');
+});
+
+test('旧公式异步完成后不会覆盖更新的流式结果', async () => {
+  const pending = new Map();
+  const app = setup('答案错误', { ok: true }, undefined, url, problemUrl, '旧：$x$。', null, dom => ({
+    startup: { promise: Promise.resolve() },
+    tex2svgPromise: tex => new Promise(resolve => {
+      const node = dom.window.document.createElement('mjx-container');
+      node.dataset.tex = tex;
+      pending.set(tex, () => resolve(node));
+    })
+  }));
+  const shadow = app.document.getElementById('neuoj-helper-root').shadowRoot;
+  await flush();
+  assert.ok(pending.has('x'));
+  shadow.querySelector('button').click();
+  await flush();
+  app.emit({ type: 'DELTA', text: '新：$y$。' });
+  app.emit({ type: 'DONE' });
+  await flush();
+  pending.get('x')();
+  await flush();
+  assert.equal(shadow.querySelector('.result mjx-container'), null);
+  pending.get('y')();
+  await flush();
+  assert.equal(shadow.querySelector('.result mjx-container').dataset.tex, 'y');
+});
+
+test('公式输出中的链接和图片被移除', async () => {
+  const app = setup('答案错误', { ok: true }, undefined, url, problemUrl, '$x$', null, dom => ({
+    startup: { promise: Promise.resolve() },
+    tex2svgPromise: async () => {
+      const node = dom.window.document.createElement('mjx-container');
+      const link = dom.window.document.createElement('a');
+      link.href = 'javascript:alert(1)';
+      link.textContent = 'x';
+      node.append(link, dom.window.document.createElement('image'));
+      return node;
+    }
+  }));
+  const result = app.document.getElementById('neuoj-helper-root').shadowRoot.querySelector('.result');
+  await flush();
+  assert.equal(result.querySelector('a, image'), null);
+  assert.equal(result.querySelector('mjx-container').textContent, 'x');
 });
 
 test('流中断时保留已有结果并提示错误', async () => {
