@@ -7,7 +7,7 @@ const path = require('node:path');
 const os = require('node:os');
 const crypto = require('node:crypto');
 const AdmZip = require('adm-zip');
-const { verifyXpi, authorization, existingVersion } = require('../scripts/release.js');
+const { verifyXpi, authorization, existingVersion, withSigningSource } = require('../scripts/release.js');
 
 test('XPI 核验拒绝无签名、内容变化、额外文件和重复文件', t => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'neuoj-xpi-'));
@@ -57,4 +57,26 @@ test('无签名凭据时发布命令失败', () => {
   });
   assert.equal(result.status, 1);
   assert.match(result.stderr, /缺少 Mozilla 签名凭据/);
+});
+
+
+test('首次签名写入的工具元数据不会污染构建，成功与失败均清理签名副本', t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'neuoj-signing-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const source = path.join(dir, 'firefox');
+  const working = path.join(dir, 'signing-source');
+  fs.mkdirSync(source);
+  fs.writeFileSync(path.join(source, 'manifest.json'), '{"version":"0.1.0"}');
+  for (const fails of [false, true]) {
+    const sign = () => withSigningSource(source, working, signingDir => {
+      assert.equal(fs.readFileSync(path.join(signingDir, 'manifest.json'), 'utf8'), '{"version":"0.1.0"}');
+      for (const name of ['.web-extension-id', '.amo-upload-uuid']) fs.writeFileSync(path.join(signingDir, name), '签名元数据');
+      if (fails) throw new Error('签名失败');
+      return '签名成功';
+    });
+    if (fails) assert.throws(sign, /签名失败/);
+    else assert.equal(sign(), '签名成功');
+    assert.deepEqual(fs.readdirSync(source), ['manifest.json']);
+    assert.equal(fs.existsSync(working), false);
+  }
 });

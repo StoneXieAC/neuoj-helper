@@ -48,7 +48,7 @@ npm run lint:firefox # 校验已经构建的 Firefox 版本
 
 推送到 `main` 只执行测试、双浏览器构建和 Firefox 校验。正式发布时，先同步 `package.json` 与 `extension/manifest.json` 的版本，提交并推送；确认日常工作流成功后，为同一提交创建并推送 `v<版本号>` 附注标签。
 
-标签工作流自动检查版本、测试、构建、打包 Chrome、完成 Mozilla 签名并核对 XPI 内容，最后创建 GitHub Release。Release 仅提供 Chrome ZIP 和已签名 Firefox XPI。凭据缺失、签名失败、超时或内容不一致时，工作流失败且不创建 Release。同一标签的任务串行执行，重跑时先查询 Mozilla 已有版本并恢复签名包，核对当前构建后再发布。若已提交 Mozilla 的同版本内容发生变化，需提升版本重新发布，不移动已有标签。
+标签工作流自动检查版本、测试、构建、打包 Chrome、在独立临时副本中完成 Mozilla 签名并核对 XPI 内容，最后创建 GitHub Release。Release 仅提供 Chrome ZIP 和已签名 Firefox XPI。凭据缺失、签名失败、超时或内容不一致时，工作流失败且不创建 Release。同一标签的任务串行执行，重跑时先查询 Mozilla 已有版本并恢复签名包，核对当前构建后再发布。若已提交 Mozilla 的同版本内容发生变化，需提升版本重新发布，不移动已有标签。
 
 Mozilla 审核源码包包含项目源码、锁文件和可读第三方源码；来源和复现方式见 [审核源码说明](docs/mozilla-source.md)。签名过程不向本地传递密钥。签名审核超时后，检查 AMO 状态，再在 Actions 中重跑失败任务。
 

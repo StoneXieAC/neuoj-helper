@@ -50,6 +50,16 @@ function packageChrome() {
   zip.writeZip(path.join(RELEASE_DIR, `neuoj-helper-${manifest().version}-chrome.zip`));
 }
 
+function withSigningSource(sourceDir, signingDir, action) {
+  fs.rmSync(signingDir, { recursive: true, force: true });
+  fs.cpSync(sourceDir, signingDir, { recursive: true });
+  try {
+    return action(signingDir);
+  } finally {
+    fs.rmSync(signingDir, { recursive: true, force: true });
+  }
+}
+
 function prepareSource() {
   const sourceDir = path.join(ROOT, 'dist/review-source');
   fs.rmSync(sourceDir, { recursive: true, force: true });
@@ -104,7 +114,9 @@ async function signFirefox() {
   const previous = await existingVersion(fetch, apiUrl, key, secret);
   if (!previous) {
     const sourceArchive = prepareSource();
-    run(process.execPath, [path.join(ROOT, 'node_modules/web-ext/bin/web-ext.js'), 'sign', '--source-dir', 'dist/firefox', '--artifacts-dir', 'dist/signed', '--channel', 'unlisted', '--upload-source-code', sourceArchive, '--approval-timeout', '900000', '--no-input']);
+    withSigningSource(path.join(ROOT, 'dist/firefox'), path.join(ROOT, 'dist/signing-source'), signingDir => {
+      run(process.execPath, [path.join(ROOT, 'node_modules/web-ext/bin/web-ext.js'), 'sign', '--source-dir', signingDir, '--artifacts-dir', 'dist/signed', '--channel', 'unlisted', '--upload-source-code', sourceArchive, '--approval-timeout', '900000', '--no-input']);
+    });
   } else {
     console.log('Mozilla 已存在此版本，恢复签名结果。');
   }
@@ -144,4 +156,4 @@ if (require.main === module) {
   })().catch(error => { console.error(error.message); process.exitCode = 1; });
 }
 
-module.exports = { filesIn, verifyXpi, authorization, existingVersion };
+module.exports = { filesIn, verifyXpi, authorization, existingVersion, withSigningSource };
