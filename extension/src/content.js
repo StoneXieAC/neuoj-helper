@@ -235,7 +235,10 @@
     const iconActions = document.createElement('div');
     iconActions.className = 'icon-actions';
     iconActions.append(settings, copy);
-    actions.append(button, status, copyStatus);
+    const thinkingSummary = document.createElement('span');
+    thinkingSummary.className = 'status thinking-summary';
+    thinkingSummary.hidden = true;
+    actions.append(button, status, thinkingSummary, copyStatus);
     top.append(actions, iconActions);
     const result = document.createElement('div');
     result.className = 'result';
@@ -244,6 +247,27 @@
     let activeProblem;
     let problemTimer;
     let heartbeat;
+    let thinkingTimer;
+    let thinkingProgress;
+    function stopThinkingTimer() {
+      clearInterval(thinkingTimer);
+      thinkingTimer = null;
+    }
+    function clearThinking() {
+      stopThinkingTimer();
+      thinkingProgress = null;
+      thinkingSummary.textContent = '';
+      thinkingSummary.hidden = true;
+    }
+    function thinkingCount(progress) {
+      return Number.isSafeInteger(progress.count) && progress.count >= 0
+        ? ` · ${progress.count} ${progress.unit === 'tokens' ? 'tokens' : '字符'}` : '';
+    }
+    function renderThinking() {
+      if (!thinkingProgress) return;
+      const seconds = Math.floor(Math.max(0, Date.now() - thinkingProgress.startedAt) / 1000);
+      setStatus('loading', `思考中 · ${seconds} 秒${thinkingCount(thinkingProgress)}`);
+    }
     let scheduledFrame;
     let answer = '';
     let copyStatusTimer;
@@ -309,6 +333,7 @@
       scheduledFrame = requestAnimationFrame(render);
     }
     function finish(state, message) {
+      stopThinkingTimer();
       clearTimeout(problemTimer);
       problemTimer = null;
       activeProblem = null;
@@ -325,6 +350,7 @@
       if (nextStatus === verdictStatus) return;
       verdictStatus = nextStatus;
       verdictVersion++;
+      clearThinking();
       clearTimeout(problemTimer);
       problemTimer = null;
       activeProblem?.abort();
@@ -389,6 +415,7 @@
       analysisStarted = true;
       button.textContent = '取消';
       setStatus('loading', '正在获取题面…');
+      clearThinking();
       answer = '';
       syncCopyButton();
       clearCopyStatus();
@@ -440,9 +467,24 @@
       catch (error) { finish('error', error.message || '无法连接扩展后台。'); return; }
       activePort = port;
       let completed = false;
+      let answerStarted = false;
       port.onMessage.addListener(message => {
         if (currentVersion !== verdictVersion) return;
-        if (message?.type === 'DELTA' && typeof message.text === 'string') {
+        if (completed) return;
+        if (message?.type === 'THINKING' && !answerStarted) {
+          thinkingProgress = { ...message,
+            startedAt: thinkingProgress?.startedAt ?? (Number.isFinite(message.startedAt) ? message.startedAt : Date.now()) };
+          renderThinking();
+          if (thinkingTimer == null) thinkingTimer = setInterval(renderThinking, 1000);
+        } else if (message?.type === 'THINKING_SUMMARY') {
+          stopThinkingTimer();
+          const seconds = Math.floor(Math.max(0, Number(message.durationMs) || 0) / 1000);
+          thinkingSummary.textContent = `用时 ${seconds} 秒${thinkingCount(message)}`;
+          thinkingSummary.hidden = false;
+        } else if (message?.type === 'DELTA' && typeof message.text === 'string' && message.text) {
+          answerStarted = true;
+          stopThinkingTimer();
+          setStatus('loading', '正在回答…');
           answer += message.text;
           syncCopyButton();
           scheduleRender();

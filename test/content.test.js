@@ -80,7 +80,8 @@ function setup(status, optionsResponse = { ok: true }, fetchProblem = async () =
     document: dom.window.document, navigator: dom.window.navigator, chrome, MutationObserver: dom.window.MutationObserver,
     DOMParser: dom.window.DOMParser, fetch: (...args) => { fetchCount++; return fetchProblem(...args); }, URL, btoa,
     setTimeout: timers?.setTimeout || setTimeout, clearTimeout: timers?.clearTimeout || clearTimeout,
-    setInterval, clearInterval, AbortController,
+    setInterval: timers?.setInterval || setInterval, clearInterval: timers?.clearInterval || clearInterval,
+    Date: timers?.Date || Date, AbortController,
     requestAnimationFrame: fn => setTimeout(fn, 0), cancelAnimationFrame: clearTimeout };
   vm.runInNewContext(script, context);
   return {
@@ -125,7 +126,7 @@ test('WA 点击后才发送提示词，收到首段即显示 Markdown，完成�
   assert.equal(shadow.querySelector('.result strong').textContent, '可能');
   assert.equal(shadow.querySelector('.result').hidden, false);
   assert.equal(button.disabled, true);
-  assert.equal(status.textContent, '正在分析…');
+  assert.equal(status.textContent, '正在回答…');
   app.emit({ type: 'DELTA', text: '在循环处' });
   app.emit({ type: 'DONE' });
   assert.equal(shadow.querySelector('.result').textContent.trim(), '可能在循环处');
@@ -772,4 +773,113 @@ test('先出现 AC 测试点、后出现失败点时恢复分析能力', async (
   assert.equal(app.document.getElementById('neuoj-helper-root'), host);
   assert.equal(host.shadowRoot.querySelector('button').disabled, false);
   assert.equal(host.shadowRoot.querySelector('.status').hidden, true);
+});
+
+
+test('直连及 WebVPN 显示思考进度，开始回答后不回退，重新分析清零', async () => {
+  for (const pageUrl of [url, directGeneralUrl]) {
+    const linked = pageUrl === url ? problemUrl : directGeneralProblemUrl;
+    const app = setup('答案错误', { ok: true }, async () => ({ ok: true, url: linked, text: async () => problemHtml }), pageUrl, linked);
+    const shadow = app.document.getElementById('neuoj-helper-root').shadowRoot;
+    const button = shadow.querySelector('button');
+    const status = shadow.querySelector('.status');
+    button.click();
+    await flush();
+    app.emit({ type: 'THINKING', count: null, unit: 'characters' });
+    assert.equal(status.textContent, '思考中 · 0 秒');
+    app.emit({ type: 'THINKING', count: 128, unit: 'characters' });
+    assert.equal(status.textContent, '思考中 · 0 秒 · 128 字符');
+    assert.equal(shadow.querySelector('.result').hidden, true);
+    app.emit({ type: 'THINKING', count: 256, unit: 'tokens' });
+    assert.equal(status.textContent, '思考中 · 0 秒 · 256 tokens');
+    app.emit({ type: 'DELTA', text: '' });
+    assert.equal(status.textContent, '思考中 · 0 秒 · 256 tokens');
+    app.emit({ type: 'DELTA', text: '正式回答' });
+    app.emit({ type: 'THINKING', count: 300, unit: 'tokens' });
+    assert.equal(status.textContent, '正在回答…');
+    app.emit({ type: 'DONE' });
+    assert.equal(status.textContent, '分析完成');
+    assert.equal(shadow.querySelector('.result').textContent.trim(), '正式回答');
+    button.click();
+    await flush();
+    assert.equal(status.textContent, '正在分析…');
+    app.emit({ type: 'THINKING', count: 1, unit: 'characters' });
+    assert.equal(status.textContent, '思考中 · 0 秒 · 1 字符');
+    app.emit({ type: 'ERROR', error: '模型接口连续 45 秒未返回新数据，请重试。' });
+    assert.equal(button.disabled, false);
+  }
+});
+
+
+test('思考计时按实际时间更新，汇总保留到重试且计时器被清理', async () => {
+  let now = 10000;
+  const intervals = new Map();
+  let id = 0;
+  const timers = { Date: { now: () => now },
+    setInterval(fn, delay) { intervals.set(++id, { fn, delay }); return id; },
+    clearInterval(key) { intervals.delete(key); } };
+  const app = setup('答案错误', { ok: true }, undefined, undefined, undefined, null, timers);
+  const shadow = app.document.getElementById('neuoj-helper-root').shadowRoot;
+  const button = shadow.querySelector('button');
+  const status = shadow.querySelector('.status');
+  const summary = shadow.querySelector('.thinking-summary');
+  button.click();
+  await flush();
+  app.emit({ type: 'THINKING', count: 128, unit: 'characters', startedAt: 10000 });
+  now = 22999;
+  [...intervals.values()].find(timer => timer.delay === 1000).fn();
+  assert.equal(status.textContent, '思考中 · 12 秒 · 128 字符');
+  app.emit({ type: 'THINKING_SUMMARY', count: 256, unit: 'characters', durationMs: 18000 });
+  app.emit({ type: 'DELTA', text: '回答' });
+  assert.equal([...intervals.values()].some(timer => timer.delay === 1000), false);
+  assert.equal(summary.textContent, '用时 18 秒 · 256 字符');
+  app.emit({ type: 'THINKING_SUMMARY', count: 128, unit: 'tokens', durationMs: 18000 });
+  assert.equal(summary.textContent, '用时 18 秒 · 128 tokens');
+  app.emit({ type: 'DONE' });
+  assert.equal(intervals.size, 0);
+  assert.equal(summary.hidden, false);
+  assert.equal(shadow.querySelector('.result').textContent.trim(), '回答');
+  button.click();
+  assert.equal(summary.hidden, true);
+  await flush();
+  app.emit({ type: 'THINKING', count: null, startedAt: now });
+  app.disconnect();
+  assert.equal(intervals.size, 0);
+  assert.equal(summary.hidden, true);
+  assert.match(status.textContent, /中断/);
+});
+
+test('思考中错误或评测变化停止计时，不生成完成汇总', async () => {
+  for (const end of ['error', 'verdict']) {
+    const intervals = new Map();
+    let id = 0;
+    const timers = { setInterval(fn, delay) { intervals.set(++id, { fn, delay }); return id; },
+      clearInterval(key) { intervals.delete(key); } };
+    const app = setup('答案错误', { ok: true }, undefined, undefined, undefined, null, timers);
+    const shadow = app.document.getElementById('neuoj-helper-root').shadowRoot;
+    shadow.querySelector('button').click();
+    await flush();
+    app.emit({ type: 'THINKING', count: null, startedAt: Date.now() });
+    assert.equal([...intervals.values()].some(timer => timer.delay === 1000), true);
+    if (end === 'error') {
+      app.emit({ type: 'ERROR', error: '请求失败' });
+      assert.equal(shadow.querySelector('.status').textContent, '请求失败');
+    } else {
+      app.document.querySelector('#tabs-testcase-judging .card-body > div').textContent = '#001 答案正确';
+      await flush();
+    }
+    assert.equal(intervals.size, 0);
+    assert.equal(shadow.querySelector('.thinking-summary').hidden, true);
+  }
+});
+
+test('没有计数的思考汇总只显示用时', async () => {
+  const app = setup('答案错误');
+  const shadow = app.document.getElementById('neuoj-helper-root').shadowRoot;
+  shadow.querySelector('button').click();
+  await flush();
+  app.emit({ type: 'THINKING_SUMMARY', count: null, durationMs: 2599 });
+  app.emit({ type: 'DELTA', text: '回答' });
+  app.emit({ type: 'DONE' });
+  assert.equal(shadow.querySelector('.thinking-summary').textContent, '用时 2 秒');
 });

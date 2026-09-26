@@ -13,7 +13,7 @@ const jsonResponse = (payload, status = 200) => new Response(JSON.stringify(payl
 const sseResponse = stream => new Response(stream, { headers: { 'content-type': 'text/event-stream' } });
 const bytes = text => new TextEncoder().encode(text);
 
-function setup({ granted = true, apiKey = 'test-secret', reasoningEffort, customPrompt, respond = () => jsonResponse({ choices: [{ message: { content: '分析结果' } }] }), timeout = false, localStore, failResultWrite = false, supportsAccessLevel = true } = {}) {
+function setup({ granted = true, apiKey = 'test-secret', reasoningEffort, customPrompt, respond = () => jsonResponse({ choices: [{ message: { content: '分析结果' } }] }), timeout = false, timers, clock = Date, localStore, failResultWrite = false, supportsAccessLevel = true } = {}) {
   let messageListener;
   let connectListener;
   let actionClicked;
@@ -64,10 +64,10 @@ function setup({ granted = true, apiKey = 'test-secret', reasoningEffort, custom
     requests.push({ url, options });
     return respond(url, options, requests.length);
   };
-  const context = { chrome, fetch, URL, AbortController, TextDecoder,
+  const context = { chrome, fetch, URL, AbortController, TextDecoder, Date: clock,
     console: { error(error) { loggedErrors.push(error); } },
-    setTimeout: timeout ? callback => { queueMicrotask(callback); return 1; } : setTimeout,
-    clearTimeout: timeout ? () => {} : clearTimeout };
+    setTimeout: timers?.setTimeout || (timeout ? callback => { queueMicrotask(callback); return 1; } : setTimeout),
+    clearTimeout: timers?.clearTimeout || (timeout ? () => {} : clearTimeout) };
   vm.runInNewContext(script, context);
   return {
     open(message = { type: 'ANALYZE', prompt: '提交状态：WA' }, from = sender) {
@@ -86,7 +86,7 @@ function setup({ granted = true, apiKey = 'test-secret', reasoningEffort, custom
       };
       connectListener(port);
       onMessage(message);
-      return { events, done, disconnect: () => port.disconnect() };
+      return { events, done, send: message => onMessage(message), disconnect: () => port.disconnect() };
     },
     async openOptions(from = { ...sender, tab: { windowId: 42 } }) {
       return new Promise(resolve => { assert.equal(messageListener({ type: 'OPEN_OPTIONS' }, from, resolve), true); });
@@ -353,7 +353,7 @@ test('鉴权失败、异常 JSON 和超时不重试', async () => {
     if (options.signal.aborted) reject({ name: 'AbortError' });
     else options.signal.addEventListener('abort', () => reject({ name: 'AbortError' }));
   }) });
-  assert.match((await stalled.open().done).error, /超时/);
+  assert.match((await stalled.open().done).error, /连续 45 秒/);
   assert.equal(stalled.requests.length, 1);
 });
 
@@ -424,4 +424,156 @@ test('失败分析保留旧缓存，新成功结果覆盖，并只保留最近�
   }
   assert.equal(app.local.analysisResults.length, 10);
   assert.equal((await app.getCached()).answer, null);
+});
+
+
+test('思考字符与准确 token 进度独立于回答和缓存', async () => {
+  const payloads = [
+    { choices: [{ delta: { reasoning_content: '想😀' } }] },
+    { choices: [{ delta: { reasoning: '继续' } }] },
+    { choices: [], usage: { completion_tokens: 99 } },
+    { choices: [], usage: { completion_tokens_details: { reasoning_tokens: 12 } } },
+    { choices: [{ delta: { reasoning_content: '隐藏', content: '结论' } }] },
+    { choices: [{ delta: { reasoning: '后续' } }] }
+  ];
+  const app = setup({ respond: () => sseResponse(new ReadableStream({ start(controller) {
+    for (const payload of payloads) controller.enqueue(bytes(`data: ${JSON.stringify(payload)}\n\n`));
+    controller.enqueue(bytes('data: [DONE]\n\n'));
+    controller.close();
+  } })) });
+  const run = app.open();
+  assert.equal((await run.done).type, 'DONE');
+  assert.deepEqual(JSON.parse(JSON.stringify(run.events)).map(({ startedAt, durationMs, ...event }) => event), [
+    { type: 'THINKING', count: 2, unit: 'characters' },
+    { type: 'THINKING', count: 4, unit: 'characters' },
+    { type: 'THINKING', count: 12, unit: 'tokens' },
+    { type: 'THINKING_SUMMARY', count: 12, unit: 'tokens' },
+    { type: 'DELTA', text: '结论' }, { type: 'DONE' }
+  ]);
+  assert.equal((await app.getCached()).answer, '结论');
+});
+
+test('空思考字段只通知思考状态，无效 token 用量不当作准确计数', async () => {
+  const app = setup({ respond: () => sseResponse(new ReadableStream({ start(controller) {
+    controller.enqueue(bytes('data: {"choices":[{"delta":{"reasoning":""}}],"usage":{"completion_tokens_details":{"reasoning_tokens":-1}}}\n\n'));
+    controller.enqueue(bytes('data: {"choices":[{"delta":{"content":"回答"}}]}\n\ndata: [DONE]\n\n'));
+    controller.close();
+  } })) });
+  const run = app.open();
+  assert.equal((await run.done).type, 'DONE');
+  assert.equal(run.events[0].type, 'THINKING');
+  assert.equal(run.events[0].count, null);
+});
+
+function controlledTimers() {
+  let now = 0;
+  let nextId = 0;
+  const pending = new Map();
+  return {
+    setTimeout(callback, delay) { const id = ++nextId; pending.set(id, { callback, at: now + delay }); return id; },
+    clearTimeout(id) { pending.delete(id); },
+    advance(delay) {
+      now += delay;
+      for (const [id, timer] of [...pending]) {
+        if (timer.at <= now) { pending.delete(id); timer.callback(); }
+      }
+    }
+  };
+}
+
+test('持续思考与心跳超过 120 秒仍完成，静默 45 秒才取消且 PING 不延长', async () => {
+  for (const finish of [true, false]) {
+    const timers = controlledTimers();
+    let streamController;
+    const app = setup({ timers, respond: (_, options) => sseResponse(new ReadableStream({ start(controller) {
+      streamController = controller;
+      options.signal.addEventListener('abort', () => controller.error({ name: 'AbortError' }));
+    } })) });
+    const run = app.open();
+    await new Promise(resolve => setImmediate(resolve));
+    for (let i = 0; i < 4; i++) {
+      timers.advance(40000);
+      streamController.enqueue(bytes(i % 2 ? ': heartbeat\n\n' : 'data: {"choices":[{"delta":{"reasoning":"想"}}]}\n\n'));
+      await new Promise(resolve => setImmediate(resolve));
+      assert.equal(run.events.some(event => event.type === 'ERROR'), false);
+    }
+    if (finish) {
+      streamController.enqueue(bytes('data: {"choices":[{"delta":{"content":"回答"}}]}\n\ndata: [DONE]\n\n'));
+      streamController.close();
+      assert.equal((await run.done).type, 'DONE');
+    } else {
+      timers.advance(44000);
+      run.send({ type: 'PING' });
+      streamController.enqueue(new Uint8Array());
+      await new Promise(resolve => setImmediate(resolve));
+      assert.equal(run.events.some(event => event.type === 'ERROR'), false);
+      timers.advance(1000);
+      assert.equal((await run.done).error, '模型接口连续 45 秒未返回新数据，请重试。');
+    }
+  }
+});
+
+test('非流式 JSON 持续接收数据时刷新空闲计时', async () => {
+  const timers = controlledTimers();
+  let streamController;
+  const app = setup({ timers, respond: (_, options) => new Response(new ReadableStream({ start(controller) {
+    streamController = controller;
+    options.signal.addEventListener('abort', () => controller.error({ name: 'AbortError' }));
+  } }), { headers: { 'content-type': 'application/json' } }) });
+  const run = app.open();
+  await new Promise(resolve => setImmediate(resolve));
+  for (const part of ['{"choices":', '[{"message":', '{"content":', '"分析"}}]}']) {
+    timers.advance(40000);
+    streamController.enqueue(bytes(part));
+    await new Promise(resolve => setImmediate(resolve));
+  }
+  streamController.close();
+  assert.equal((await run.done).type, 'DONE');
+});
+
+test('等待响应头连续静默 45 秒会取消请求', async () => {
+  const timers = controlledTimers();
+  const app = setup({ timers, respond: (_, options) => new Promise((resolve, reject) => {
+    options.signal.addEventListener('abort', () => reject({ name: 'AbortError' }));
+  }) });
+  const run = app.open();
+  await new Promise(resolve => setImmediate(resolve));
+  timers.advance(44999);
+  assert.equal(run.events.length, 0);
+  timers.advance(1);
+  assert.equal((await run.done).error, '模型接口连续 45 秒未返回新数据，请重试。');
+});
+
+
+test('思考汇总固定耗时，晚到 token 用量只更新计数，同事件思考回答计时为零', async () => {
+  let now = 1000;
+  let controller;
+  const app = setup({ clock: { now: () => now }, respond: () => sseResponse(new ReadableStream({ start(value) { controller = value; } })) });
+  const run = app.open();
+  const send = async payload => {
+    controller.enqueue(bytes(`data: ${JSON.stringify(payload)}\n\n`));
+    await new Promise(resolve => setImmediate(resolve));
+  };
+  await new Promise(resolve => setImmediate(resolve));
+  await send({ choices: [{ delta: { reasoning: '想' } }] });
+  assert.equal(run.events[0].startedAt, 1000);
+  now = 19500;
+  await send({ choices: [{ delta: { content: '结论' } }] });
+  const summary = run.events.find(event => event.type === 'THINKING_SUMMARY');
+  assert.equal(summary.durationMs, 18500);
+  now = 50000;
+  await send({ usage: { completion_tokens_details: { reasoning_tokens: 128 } } });
+  assert.equal(run.events.at(-1).count, 128);
+  assert.equal(run.events.at(-1).durationMs, 18500);
+  controller.enqueue(bytes('data: [DONE]\n\n'));
+  controller.close();
+  assert.equal((await run.done).type, 'DONE');
+  const instant = setup({ clock: { now: () => 42 }, respond: () => sseResponse(new ReadableStream({ start(value) {
+    value.enqueue(bytes('data: {"choices":[{"delta":{"reasoning":"想","content":"答"}}]}\n\ndata: [DONE]\n\n'));
+    value.close();
+  } })) });
+  const second = instant.open();
+  await second.done;
+  assert.equal(second.events[0].type, 'THINKING_SUMMARY');
+  assert.equal(second.events[0].durationMs, 0);
 });

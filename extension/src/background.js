@@ -128,13 +128,12 @@ function timeoutFor(controller) {
   let timedOut = false;
   let idleTimer;
   const abort = () => { timedOut = true; controller.abort(); };
-  const totalTimer = setTimeout(abort, 120000);
   const resetIdle = () => {
     clearTimeout(idleTimer);
     idleTimer = setTimeout(abort, 45000);
   };
   resetIdle();
-  return { resetIdle, didTimeOut: () => timedOut, clear: () => { clearTimeout(idleTimer); clearTimeout(totalTimer); } };
+  return { resetIdle, didTimeOut: () => timedOut, clear: () => { clearTimeout(idleTimer); } };
 }
 
 function answerFromJson(payload) {
@@ -173,13 +172,18 @@ function rejectsStreaming(status, detail) {
     /unsupported|not support|unknown|invalid|disabled|不支持|不接受|无法|无效|禁用/i.test(detail);
 }
 
-async function consumeEvents(response, emit, resetIdle, apiKey) {
+async function consumeEvents(response, emit, emitThinking, resetIdle, apiKey) {
   if (!response.body?.getReader) throw new Error('模型接口没有返回可读取的数据流。');
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let pending = '';
   let answer = '';
   let finished = false;
+  let thinkingCharacters = 0;
+  let thinkingTokens = null;
+  let answerStarted = false;
+  let thinkingStartedAt = null;
+  let thinkingDurationMs = null;
 
   function handleEvent(raw) {
     const data = raw.split(/\r\n|\r|\n/).filter(line => line.startsWith('data:'))
@@ -191,8 +195,32 @@ async function consumeEvents(response, emit, resetIdle, apiKey) {
     catch { throw new Error('模型接口返回了无效的流式数据。'); }
     if (payload?.error) throw new Error(`模型接口流式返回错误：${safeDetail(payload.error.message, apiKey) || '未知错误。'}`);
     if (payload?.choices?.[0]?.finish_reason === 'length') throw new Error('模型回答达到长度上限，请调整请求后重试。');
-    const delta = payload?.choices?.[0]?.delta?.content;
-    if (typeof delta !== 'string' || !delta) return;
+    const fields = payload?.choices?.[0]?.delta;
+    const reasoning = typeof fields?.reasoning_content === 'string' ? fields.reasoning_content
+      : typeof fields?.reasoning === 'string' ? fields.reasoning : null;
+    const tokens = payload?.usage?.completion_tokens_details?.reasoning_tokens
+      ?? payload?.usage?.output_tokens_details?.reasoning_tokens;
+    const hasTokens = Number.isSafeInteger(tokens) && tokens >= 0;
+    const delta = fields?.content;
+    const hasAnswer = typeof delta === 'string' && !!delta;
+    const hasThinking = reasoning !== null || hasTokens;
+    if (!answerStarted && hasThinking && thinkingStartedAt === null) thinkingStartedAt = Date.now();
+    if (!answerStarted && reasoning) thinkingCharacters += Array.from(reasoning).length;
+    if (hasTokens) thinkingTokens = Math.max(thinkingTokens ?? 0, tokens);
+    const progress = () => ({ count: thinkingTokens ?? (thinkingCharacters || null),
+      unit: thinkingTokens === null ? 'characters' : 'tokens', startedAt: thinkingStartedAt });
+    if (thinkingStartedAt !== null) {
+      if (!answerStarted && hasAnswer) {
+        thinkingDurationMs = Math.max(0, Date.now() - thinkingStartedAt);
+        emitThinking({ type: 'THINKING_SUMMARY', ...progress(), durationMs: thinkingDurationMs });
+      } else if (answerStarted && hasTokens) {
+        emitThinking({ type: 'THINKING_SUMMARY', ...progress(), durationMs: thinkingDurationMs });
+      } else if (!answerStarted && hasThinking) {
+        emitThinking({ type: 'THINKING', ...progress() });
+      }
+    }
+    if (!hasAnswer) return;
+    answerStarted = true;
     answer += delta;
     if (answer.length > MAX_ANSWER) throw new Error('模型回复超过长度限制。');
     emit(delta);
@@ -202,7 +230,7 @@ async function consumeEvents(response, emit, resetIdle, apiKey) {
     while (!finished) {
       const chunk = await reader.read();
       if (chunk.done) break;
-      resetIdle();
+      if (chunk.value?.byteLength) resetIdle();
       pending += decoder.decode(chunk.value, { stream: true });
       if (pending.length > 1000000) throw new Error('模型接口返回了过长的流式事件。');
       let delimiter;
@@ -222,7 +250,27 @@ async function consumeEvents(response, emit, resetIdle, apiKey) {
   return answer;
 }
 
-async function analyze(prompt, images, sender, emit, controller, resetIdle) {
+async function readJsonWithActivity(response, resetIdle) {
+  if (!response.body?.getReader) return response.json();
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let text = '';
+  try {
+    while (true) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      if (chunk.value?.byteLength) resetIdle();
+      text += decoder.decode(chunk.value, { stream: true });
+    }
+    text += decoder.decode();
+    return JSON.parse(text);
+  } finally {
+    reader.cancel().catch(() => {});
+    reader.releaseLock();
+  }
+}
+
+async function analyze(prompt, images, sender, emit, emitThinking, controller, resetIdle) {
   validateSender(sender);
   if (typeof prompt !== 'string' || !prompt.trim() || prompt.length > 24000) {
     throw new Error('分析内容无效或超过长度限制。');
@@ -285,7 +333,7 @@ async function analyze(prompt, images, sender, emit, controller, resetIdle) {
   resetIdle();
   if (!response.headers.get('content-type')?.toLowerCase().includes('text/event-stream')) {
     let payload;
-    try { payload = await response.json(); }
+    try { payload = await readJsonWithActivity(response, resetIdle); }
     catch (error) {
       if (error?.name === 'AbortError') throw error;
       throw new Error('模型接口返回的不是有效 JSON。');
@@ -295,7 +343,7 @@ async function analyze(prompt, images, sender, emit, controller, resetIdle) {
     emit(answer);
     return answer;
   } else {
-    return consumeEvents(response, emit, resetIdle, apiKey);
+    return consumeEvents(response, emit, emitThinking, resetIdle, apiKey);
   }
 }
 
@@ -380,7 +428,8 @@ chrome.runtime.onConnect.addListener(port => {
       try { port.postMessage(event); }
       catch { disconnected = true; controller.abort(); }
     };
-    analyze(message.prompt, message.images, port.sender, text => post({ type: 'DELTA', text }), controller, timeout.resetIdle)
+    analyze(message.prompt, message.images, port.sender, text => post({ type: 'DELTA', text }),
+      progress => post(progress), controller, timeout.resetIdle)
       .then(async answer => {
         if (!disconnected) {
           try {
@@ -394,7 +443,7 @@ chrome.runtime.onConnect.addListener(port => {
       }, error => {
         if (disconnected) return;
         const reason = timeout.didTimeOut() || error?.name === 'AbortError'
-          ? '模型请求超时，请稍后重试。'
+          ? '模型接口连续 45 秒未返回新数据，请重试。'
           : error?.message || '操作失败。';
         post({ type: 'ERROR', error: reason });
       }).finally(() => { timeout.clear(); if (!disconnected) port.disconnect(); });
