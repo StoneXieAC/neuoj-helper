@@ -76,15 +76,17 @@ function openPage(background, url) {
     },
     connect() { modelRequests++; throw new Error('不应自动分析'); }
   } };
+  dom.window.MathJax = {
+    startup: { promise: Promise.resolve() },
+    tex2svgPromise: async tex => {
+      const node = dom.window.document.createElement('mjx-container');
+      node.dataset.tex = tex;
+      return node;
+    }
+  };
   vm.runInNewContext(contentScript, {
-    globalThis: { NEUOJCore: core, markdownit, texmath, MathJax: {
-      startup: { promise: Promise.resolve() },
-      tex2svgPromise: async tex => {
-        const node = dom.window.document.createElement('mjx-container');
-        node.dataset.tex = tex;
-        return node;
-      }
-    } }, location: dom.window.location,
+    globalThis: { NEUOJCore: core, markdownit, texmath }, window: dom.window, console,
+    location: dom.window.location,
     document: dom.window.document, chrome, MutationObserver: dom.window.MutationObserver,
     DOMParser: dom.window.DOMParser, URL, setTimeout, setInterval, clearInterval,
     requestAnimationFrame: fn => setTimeout(fn, 0), cancelAnimationFrame: clearTimeout,

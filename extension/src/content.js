@@ -101,10 +101,11 @@
   let observer;
 
   async function typesetMath(placeholders, items, version, isCurrent) {
-    const mathjax = globalThis.MathJax;
+    const mathjax = window.MathJax;
     try {
       await mathjax.startup.promise;
-    } catch {
+    } catch (error) {
+      console.warn('NEUOJ 小助手：MathJax 初始化失败，请检查本地模块加载。', error);
       if (isCurrent(version)) {
         for (const [index, placeholder] of placeholders.entries()) placeholder.textContent = items[index].tex;
       }
@@ -120,7 +121,8 @@
         for (const link of rendered.querySelectorAll('a')) link.replaceWith(...link.childNodes);
         for (const unsafe of rendered.querySelectorAll('image, foreignObject')) unsafe.remove();
         placeholder.replaceWith(rendered);
-      } catch {
+      } catch (error) {
+        console.warn('NEUOJ 小助手：公式转换失败，请检查公式语法或本地字体加载。', error);
         if (isCurrent(version)) placeholder.textContent = item.tex;
       }
     }

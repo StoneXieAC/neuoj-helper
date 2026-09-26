@@ -1,4 +1,5 @@
-globalThis.MathJax = {
+// Firefox 内容脚本的 globalThis 与 window 不同；MathJax 使用 window 保存实例。
+window.MathJax = {
   loader: {
     paths: {
       mathjax: chrome.runtime.getURL('vendor/mathjax'),

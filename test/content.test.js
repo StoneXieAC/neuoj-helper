@@ -71,12 +71,15 @@ function setup(status, optionsResponse = { ok: true }, fetchProblem = async () =
     }
   } };
   const mathjax = mathjaxFactory(dom);
+  dom.window.MathJax = mathjax;
+  const warnings = [];
   Object.defineProperty(dom.window.navigator, 'clipboard', { value: { async writeText(value) {
     copied.push(value);
     await writeClipboard(value);
   } } });
   delete texmath.katex;
-  const context = { globalThis: { NEUOJCore: core, markdownit, texmath, MathJax: mathjax }, location: dom.window.location,
+  const context = { globalThis: { NEUOJCore: core, markdownit, texmath, MathJax: {} }, window: dom.window,
+    console: { warn(...args) { warnings.push(args); } }, location: dom.window.location,
     document: dom.window.document, navigator: dom.window.navigator, chrome, MutationObserver: dom.window.MutationObserver,
     DOMParser: dom.window.DOMParser, fetch: (...args) => { fetchCount++; return fetchProblem(...args); }, URL, btoa,
     setTimeout: timers?.setTimeout || setTimeout, clearTimeout: timers?.clearTimeout || clearTimeout,
@@ -91,6 +94,7 @@ function setup(status, optionsResponse = { ok: true }, fetchProblem = async () =
     get cacheRequests() { return cacheRequests; },
     copied,
     mathjax,
+    warnings,
     emit(message) { receive(message); },
     disconnect() { disconnected(); }
   };
@@ -424,6 +428,32 @@ test('缓存中的公式重新进入页面后仍被渲染，无效公式不妨�
   assert.equal(result.querySelector('mjx-container').dataset.tex, 'x^2');
   assert.match(result.textContent, /\\notacommand/);
   assert.equal(result.querySelector('strong').textContent, '保留');
+  assert.match(app.warnings[0][0], /公式转换失败/);
+});
+
+test('Firefox 全局对象分离时渲染用户原文的全部公式并保留源码', async () => {
+  const answer = '错误位置在 `cout<<(n-1)*(m+1)<<endl;`：题意是求把 $m$ 个苹果分给 $n$ 个孩子的非负整数解数，即 $C(n+m-1,m)$ 对 $10^9+7$ 取模。源码却直接输出 $(n-1)\\cdot(m+1)$，既用错公式也未取模，因此出现 $360$、$-450386346$、$0$ 这类与标准答案不符的输出（如测试点 #001 标准答案为 $190187265$，用户输出为 $360$）。';
+  for (const [pageUrl, linkedProblem] of [[url, problemUrl], [directGeneralUrl, directGeneralProblemUrl]]) {
+    const app = setup('答案错误', { ok: true }, undefined, pageUrl, linkedProblem, answer);
+    await flush();
+    const result = app.document.getElementById('neuoj-helper-root').shadowRoot.querySelector('.result');
+    assert.deepEqual([...result.querySelectorAll('mjx-container')].map(node => node.dataset.tex),
+      ['m', 'n', 'C(n+m-1,m)', '10^9+7', '(n-1)\\cdot(m+1)', '360', '-450386346', '0', '190187265', '360']);
+    assert.equal(result.querySelectorAll('svg').length, 10);
+    assert.equal(result.querySelector('code').textContent, 'cout<<(n-1)*(m+1)<<endl;');
+    assert.equal(app.warnings.length, 0);
+  }
+});
+
+test('MathJax 初始化失败时保留公式并记录初始化错误', async () => {
+  const app = setup('答案错误', { ok: true }, undefined, url, problemUrl, '公式 $x^2$。', null,
+    () => ({ startup: { get promise() { throw new Error('本地模块加载失败'); } } }));
+  await flush();
+  const result = app.document.getElementById('neuoj-helper-root').shadowRoot.querySelector('.result');
+  assert.equal(result.querySelector('mjx-container'), null);
+  assert.equal(result.textContent.trim(), '公式 x^2。');
+  assert.match(app.warnings[0][0], /初始化失败/);
+  assert.equal(app.warnings[0][1].message, '本地模块加载失败');
 });
 
 test('直连提交页也渲染已缓存的公式', async () => {
