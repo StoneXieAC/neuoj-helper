@@ -4,16 +4,23 @@
   "private": true,
   "description": "NEUOJ 提交错误分析浏览器扩展",
   "scripts": {
-    "build:firefox": "node scripts/build-firefox.js",
-    "build:releases": "node scripts/build-releases.js",
-    "test": "node --test"
+    "dev:chrome": "node scripts/build.js chrome",
+    "dev:firefox": "node scripts/build.js firefox",
+    "build": "node scripts/build.js",
+    "lint:firefox": "web-ext lint --source-dir dist/firefox --self-hosted",
+    "test": "node --test test/*.test.js"
   },
   "devDependencies": {
-    "jsdom": "^26.1.0"
+    "adm-zip": "0.6.1",
+    "jsdom": "^26.1.0",
+    "web-ext": "10.7.0"
   },
   "dependencies": {
     "markdown-it": "15.0.2",
     "markdown-it-texmath": "1.0.0",
     "mathjax": "4.1.3"
+  },
+  "engines": {
+    "node": ">=22"
   }
 }

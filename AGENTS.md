@@ -2,15 +2,15 @@
 
 ## 项目结构
 
-`extension/` 是可直接加载到 Chrome 的 Manifest V3 扩展。`extension/src/core.js` 负责页面识别、信息提取和提示词组装；`content.js` 负责页面交互；`background.js` 负责接口请求；`options.html`、`options.js` 和 `options.css` 组成设置页。系统提示词位于 `extension/prompts/system.md`，随扩展分发的第三方脚本位于 `extension/vendor/`。`test/` 按对应模块存放测试。`html/` 是本地页面参考资料，已被 Git 忽略，不应作为运行时依赖。
+`extension/` 是可直接加载到 Chrome 的 Manifest V3 扩展。`extension/src/core.js` 负责页面识别、信息提取和提示词组装；`content.js` 负责页面交互；`background.js` 负责接口请求；`options.html`、`options.js` 和 `options.css` 组成设置页。系统提示词位于 `extension/prompts/system.md`，随扩展分发的第三方脚本位于 `extension/vendor/`。`test/` 按对应模块存放测试。构建产物位于 `dist/chrome` 和 `dist/firefox`，不提交到 Git。
 
 ## 开发与验证
 
 - `npm ci`：按锁文件安装依赖。
 - `npm test`：运行 Node.js 内置测试运行器中的全部测试。
-- 在 `chrome://extensions/` 开启开发者模式，选择“加载已解压的扩展程序”并指定 `extension/`；修改扩展文件后在该页面重新加载。
+- 在 `chrome://extensions/` 开启开发者模式，选择“加载已解压的扩展程序”并指定 `dist/chrome/`；修改扩展文件后在该页面重新加载。
 
-项目没有构建或格式化脚本，`extension/` 中的文件就是交付内容。提交前至少运行 `npm test`；涉及页面交互时，还应在 `https://oj.neu.edu.cn` 的提交页手动核对。
+本地与 Actions 共用 `scripts/build.js`；`npm run dev:chrome` 和 `npm run dev:firefox` 分别构建单个浏览器，`npm run build` 构建两个版本。项目没有格式化脚本。提交前至少运行 `npm test`；涉及页面交互时，还应在 `https://oj.neu.edu.cn` 的提交页手动核对。
 
 ## 提交信息
 

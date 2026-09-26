@@ -1,8 +1,8 @@
 node_modules/
 .DS_Store
-
-/html/
 /dist/
-
+/web-ext-artifacts/
+*.zip
+*.xpi
 .env
-
+.env.*

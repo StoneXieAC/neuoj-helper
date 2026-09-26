@@ -1,15 +1,20 @@
-name: 测试与打包
+name: 测试与发布
 
 on:
   push:
     branches: [main]
     tags: ['v*']
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -19,42 +24,65 @@ jobs:
       - name: 检查版本标签
         if: startsWith(github.ref, 'refs/tags/')
         run: |
-          expected="v$(node -p "require('./extension/manifest.json').version")"
-          if [ "$GITHUB_REF_NAME" != "$expected" ]; then
-            echo "版本标签 $GITHUB_REF_NAME 与扩展版本 $expected 不一致" >&2
-            exit 1
-          fi
+          node -e "const p = require('./package.json').version; const m = require('./extension/manifest.json').version; if (p !== m || process.env.GITHUB_REF_NAME !== 'v' + m) throw new Error('标签与项目版本不一致');"
       - run: npm ci
       - run: npm test
-      - run: npm run build:releases
-      - name: 检查发行包
-        run: |
-          version="$(node -p "require('./extension/manifest.json').version")"
-          for browser in chromium firefox; do
-            archive="dist/releases/neuoj-helper-${version}-${browser}.zip"
-            test -f "$archive"
-            unzip -tq "$archive"
-          done
-      - name: 保存发行包
+      - run: npm run build
+      - run: npm run lint:firefox
+      - name: 保存构建目录
         if: startsWith(github.ref, 'refs/tags/')
         uses: actions/upload-artifact@v4
         with:
-          name: release-packages
-          path: dist/releases/*.zip
+          name: browser-builds
+          path: |
+            dist/chrome
+            dist/firefox
           if-no-files-found: error
 
   release:
     if: startsWith(github.ref, 'refs/tags/')
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
       - uses: actions/download-artifact@v4
         with:
-          name: release-packages
-          path: dist/releases
+          name: browser-builds
+          path: dist
+      - name: 打包 Chrome
+        run: node scripts/release.js package
+      - name: Mozilla 签名与核验
+        env:
+          WEB_EXT_API_KEY: ${{ secrets.WEB_EXT_API_KEY }}
+          WEB_EXT_API_SECRET: ${{ secrets.WEB_EXT_API_SECRET }}
+        run: node scripts/release.js sign
+      - name: 保存已核验发行包
+        uses: actions/upload-artifact@v4
+        with:
+          name: signed-release-packages
+          path: |
+            dist/releases/*.zip
+            dist/releases/*.xpi
+          if-no-files-found: error
       - name: 发布 GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/releases/*.zip --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes
+        run: |
+          version="$(node -p "require('./extension/manifest.json').version")"
+          chrome="dist/releases/neuoj-helper-${version}-chrome.zip"
+          firefox="dist/releases/neuoj-helper-${version}-firefox.xpi"
+          test -f "$chrome"
+          test -f "$firefox"
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "$chrome" "$firefox" --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" "$chrome" "$firefox" --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes
+          fi
