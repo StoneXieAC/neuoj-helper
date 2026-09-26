@@ -10,7 +10,8 @@ const core = require('../extension/src/core.js');
 
 const backgroundScript = fs.readFileSync(path.join(__dirname, '../extension/src/background.js'), 'utf8');
 const contentScript = fs.readFileSync(path.join(__dirname, '../extension/src/content.js'), 'utf8');
-const pageUrl = 'https://webvpn.neu.edu.cn/https/62304135386136393339346365373340bfebea318fd008d8f60d257088/submissions/1716622';
+const pageUrl = 'https://oj.neu.edu.cn/submissions/1716622';
+const vpnPageUrl = 'https://webvpn.neu.edu.cn/https/62304135386136393339346365373340bfebea318fd008d8f60d257088/submissions/1716622';
 
 function startBackground(local) {
   let onMessage;
@@ -84,6 +85,7 @@ function openPage(background, url) {
       return node;
     }
   };
+  delete texmath.katex;
   vm.runInNewContext(contentScript, {
     globalThis: { NEUOJCore: core, markdownit, texmath }, window: dom.window, console,
     location: dom.window.location,
@@ -99,20 +101,23 @@ function openPage(background, url) {
   };
 }
 
-test('WebVPN 成功分析后重建后台和页面仍恢复本机缓存', async () => {
-  const local = { baseUrl: 'http://localhost:8765/v1', apiKey: 'test-secret', model: 'custom-model' };
-  const firstBackground = startBackground(local);
-  assert.equal((await firstBackground.analyze(pageUrl)).type, 'DONE');
-  assert.equal(local.analysisResults[0].answer, '**缓存结论** $x^2$');
+for (const [name, currentUrl] of [['成功分析后重建后台和页面仍恢复本机缓存', pageUrl],
+  ['WebVPN 成功分析后重建后台和页面仍恢复本机缓存', vpnPageUrl]]) {
+  test(name, async () => {
+    const local = { baseUrl: 'http://localhost:8765/v1', apiKey: 'test-secret', model: 'custom-model' };
+    const firstBackground = startBackground(local);
+    assert.equal((await firstBackground.analyze(currentUrl)).type, 'DONE');
+    assert.equal(local.analysisResults[0].answer, '**缓存结论** $x^2$');
 
-  const reloadedBackground = startBackground(local);
-  const reloadedPage = openPage(reloadedBackground, `${pageUrl}#tabs-testcase-judging`);
-  await new Promise(resolve => setImmediate(resolve));
-  const shadow = reloadedPage.document.getElementById('neuoj-helper-root').shadowRoot;
-  assert.equal(shadow.querySelector('.result strong').textContent, '缓存结论');
-  await new Promise(resolve => setImmediate(resolve));
-  assert.equal(shadow.querySelector('.result mjx-container').dataset.tex, 'x^2');
-  assert.equal(shadow.querySelector('.status').textContent, '已恢复上次分析');
-  assert.equal(reloadedPage.cacheRequests, 1);
-  assert.equal(reloadedPage.modelRequests, 0);
-});
+    const reloadedBackground = startBackground(local);
+    const reloadedPage = openPage(reloadedBackground, `${currentUrl}#tabs-testcase-judging`);
+    await new Promise(resolve => setImmediate(resolve));
+    const shadow = reloadedPage.document.getElementById('neuoj-helper-root').shadowRoot;
+    assert.equal(shadow.querySelector('.result strong').textContent, '缓存结论');
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(shadow.querySelector('.result mjx-container').dataset.tex, 'x^2');
+    assert.equal(shadow.querySelector('.status').textContent, '已恢复上次分析');
+    assert.equal(reloadedPage.cacheRequests, 1);
+    assert.equal(reloadedPage.modelRequests, 0);
+  });
+}

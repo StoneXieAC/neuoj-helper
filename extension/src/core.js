@@ -38,10 +38,10 @@
     const submission = new URL(submissionUrl);
     const base = submission.pathname.replace(/\/submissions?\/\d+\/?$/, '');
     let problemPath;
-    if (/^\/submissions?\/\d+\/?$/.test(path)) problemPath = /^\/problems\/\d+\/?$/;
-    else if (/^\/training\/\d+\/submissions?\/\d+\/?$/.test(path)) problemPath = /^\/part\/\d+\/problem\/\d+\/?$/;
-    else if (/^\/contest\/\d+\/submissions?\/\d+\/?$/.test(path)) problemPath = /^\/problem\/\d+\/?$/;
-    else problemPath = /(?:^|\/)problem\/\d+\/?$/;
+    if (/^\/submissions?\/\d+\/?$/.test(path)) problemPath = /^\/problems\/[A-Za-z0-9]+\/?$/;
+    else if (/^\/training\/\d+\/submissions?\/\d+\/?$/.test(path)) problemPath = /^\/part\/\d+\/problem\/[A-Za-z0-9]+\/?$/;
+    else if (/^\/(?:contest|exam)\/\d+\/submissions?\/\d+\/?$/.test(path)) problemPath = /^\/problem\/[A-Za-z0-9]+\/?$/;
+    else problemPath = /(?:^|\/)problem\/[A-Za-z0-9]+\/?$/;
     for (const link of doc.querySelectorAll('a[href]')) {
       if (link.textContent.trim() !== '返回题目') continue;
       try {

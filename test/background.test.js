@@ -6,7 +6,8 @@ const path = require('node:path');
 
 const script = fs.readFileSync(path.join(__dirname, '../extension/src/background.js'), 'utf8');
 const systemPrompt = fs.readFileSync(path.join(__dirname, '../extension/prompts/system.md'), 'utf8');
-const sender = { url: 'https://webvpn.neu.edu.cn/https/62304135386136393339346365373340bfebea318fd008d8f60d257088/training/8/submission/1716135' };
+const sender = { url: 'https://oj.neu.edu.cn/training/8/submission/1716135' };
+const vpnSender = { url: 'https://webvpn.neu.edu.cn/https/62304135386136393339346365373340bfebea318fd008d8f60d257088/training/8/submission/1716135' };
 const jsonResponse = (payload, status = 200) => new Response(JSON.stringify(payload), {
   status, headers: { 'content-type': 'application/json' }
 });
@@ -311,6 +312,10 @@ test('非流式和流式长度截断均报错且不缓存', async () => {
 test('后台允许直连和 WebVPN 通用提交页，拒绝伪造路径', async () => {
   for (const url of ['https://oj.neu.edu.cn/submissions/1716650',
     'https://webvpn.neu.edu.cn/https/62304135386136393339346365373340bfebea318fd008d8f60d257088/submissions/1716650',
+    'https://oj.neu.edu.cn/exam/46/submission/1699672',
+    'https://oj.neu.edu.cn/exam/46/submissions/1699672',
+    'https://webvpn.neu.edu.cn/https/62304135386136393339346365373340bfebea318fd008d8f60d257088/exam/46/submission/1699672',
+    'https://webvpn.neu.edu.cn/https/62304135386136393339346365373340bfebea318fd008d8f60d257088/exam/46/submissions/1699672',
     'https://oj.neu.edu.cn/contest/42/submission/1716680',
     'https://webvpn.neu.edu.cn/https/62304135386136393339346365373340bfebea318fd008d8f60d257088/contest/42/submission/1716680']) {
     const app = setup();
@@ -369,28 +374,28 @@ test('自定义系统提示词用于请求，空白自定义提示词被拒绝',
 
 test('完成后按提交地址缓存，忽略锚点并隔离直连、WebVPN 和不同提交', async () => {
   const app = setup();
-  const vpn = { url: sender.url + '#tabs-testcase-judging' };
+  const vpn = { url: vpnSender.url + '#tabs-testcase-judging' };
   assert.equal((await app.getCached(vpn)).answer, null);
   assert.equal((await app.open(undefined, vpn).done).type, 'DONE');
-  assert.equal((await app.getCached({ url: sender.url + '?tab=1' })).answer, '分析结果');
-  assert.equal((await app.getCached({ url: sender.url.replace('62304135386136393339346365373340bfebea318fd008d8f60d257088', 'rotated-id') })).ok, false);
+  assert.equal((await app.getCached({ url: vpnSender.url + '?tab=1' })).answer, '分析结果');
+  assert.equal((await app.getCached({ url: vpnSender.url.replace('62304135386136393339346365373340bfebea318fd008d8f60d257088', 'rotated-id') })).ok, false);
   assert.equal((await app.getCached({ url: 'https://oj.neu.edu.cn/training/8/submission/1716135' })).answer, null);
-  assert.equal((await app.getCached({ url: sender.url.replace('1716135', '1716136') })).answer, null);
+  assert.equal((await app.getCached({ url: vpnSender.url.replace('1716135', '1716136') })).answer, null);
   assert.equal((await app.getCached({ url: 'https://evil.example/submissions/1' })).ok, false);
 });
 
 test('刷新重建后台后仍从共享本机存储读取缓存，并兼容旧 WebVPN 地址键', async () => {
   const localStore = { baseUrl: 'http://localhost:8765/v1', apiKey: 'test-secret', model: 'custom-model' };
   const first = setup({ localStore });
-  assert.equal((await first.open().done).type, 'DONE');
+  assert.equal((await first.open(undefined, vpnSender).done).type, 'DONE');
   assert.equal(localStore.analysisResults[0].url, 'webvpn:/training/8/submission/1716135');
   const reloaded = setup({ localStore });
-  assert.equal((await reloaded.getCached({ url: sender.url })).answer, '分析结果');
+  assert.equal((await reloaded.getCached({ url: vpnSender.url })).answer, '分析结果');
   assert.equal(reloaded.requests.length, 0);
 
-  localStore.analysisResults = [{ url: sender.url, answer: '旧版结果' }];
-  assert.equal((await reloaded.getCached({ url: sender.url })).answer, '旧版结果');
-  assert.equal((await reloaded.open().done).type, 'DONE');
+  localStore.analysisResults = [{ url: vpnSender.url, answer: '旧版结果' }];
+  assert.equal((await reloaded.getCached({ url: vpnSender.url })).answer, '旧版结果');
+  assert.equal((await reloaded.open(undefined, vpnSender).done).type, 'DONE');
   assert.equal(localStore.analysisResults.length, 1);
   assert.equal(localStore.analysisResults[0].url, 'webvpn:/training/8/submission/1716135');
 });

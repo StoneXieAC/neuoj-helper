@@ -9,14 +9,16 @@ const texmath = require('markdown-it-texmath');
 const core = require('../extension/src/core.js');
 
 const script = fs.readFileSync(path.join(__dirname, '../extension/src/content.js'), 'utf8');
-const url = 'https://webvpn.neu.edu.cn/https/62304135386136393339346365373340bfebea318fd008d8f60d257088/training/8/submission/123';
-const problemUrl = 'https://webvpn.neu.edu.cn/https/62304135386136393339346365373340bfebea318fd008d8f60d257088/training/8/part/68/problem/286';
-const generalUrl = 'https://webvpn.neu.edu.cn/https/62304135386136393339346365373340bfebea318fd008d8f60d257088/submissions/123';
-const generalProblemUrl = 'https://webvpn.neu.edu.cn/https/62304135386136393339346365373340bfebea318fd008d8f60d257088/problems/43';
-const directGeneralUrl = 'https://oj.neu.edu.cn/submissions/123';
-const directGeneralProblemUrl = 'https://oj.neu.edu.cn/problems/43';
-const contestUrl = 'https://webvpn.neu.edu.cn/https/62304135386136393339346365373340bfebea318fd008d8f60d257088/contest/162/submissions/1711165';
-const contestProblemUrl = 'https://webvpn.neu.edu.cn/https/62304135386136393339346365373340bfebea318fd008d8f60d257088/contest/162/problem/10';
+const url = 'https://oj.neu.edu.cn/training/8/submission/123';
+const vpnUrl = 'https://webvpn.neu.edu.cn/https/62304135386136393339346365373340bfebea318fd008d8f60d257088/training/8/submission/123';
+const problemUrl = 'https://oj.neu.edu.cn/training/8/part/68/problem/286';
+const vpnProblemUrl = 'https://webvpn.neu.edu.cn/https/62304135386136393339346365373340bfebea318fd008d8f60d257088/training/8/part/68/problem/286';
+const generalUrl = 'https://oj.neu.edu.cn/submissions/123';
+const generalProblemUrl = 'https://oj.neu.edu.cn/problems/43';
+const vpnGeneralUrl = 'https://webvpn.neu.edu.cn/https/62304135386136393339346365373340bfebea318fd008d8f60d257088/submissions/123';
+const vpnGeneralProblemUrl = 'https://webvpn.neu.edu.cn/https/62304135386136393339346365373340bfebea318fd008d8f60d257088/problems/43';
+const contestUrl = 'https://oj.neu.edu.cn/contest/162/submissions/1711165';
+const contestProblemUrl = 'https://oj.neu.edu.cn/contest/162/problem/10';
 const problemHtml = '<div class="col-7"><div class="card mb-2"><div class="card-header"><a class="nav-link"><strong>求幂</strong></a></div></div><div id="problem-content-vditor"><p>计算 <span data-math="m^n">公式</span>。</p></div><div id="example-input">5 8</div><div id="example-output">390625</div></div>';
 const contestProblemHtml = '<div class="col-7"><div class="card mb-2"><div class="card-header"><a class="nav-link"><strong>J - 状态转换</strong></a></div></div><div id="problem-content-vditor"><p>按规则转换状态。</p></div><div id="example-input">3</div><div id="example-output">7</div></div>';
 const flush = () => new Promise(resolve => setImmediate(resolve));
@@ -169,21 +171,21 @@ test('图片题点击后按题面顺序读取图片，按真实格式发送数�
   app.emit({ type: 'DONE' });
 });
 
-test('直连题面图片使用直连地址读取', async () => {
-  const target = new URL('./diagram.png', directGeneralProblemUrl).href;
+test('题面相对图片按题目地址读取', async () => {
+  const target = new URL('./diagram.png', generalProblemUrl).href;
   const png = Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10]);
   const requested = [];
   const fetchProblem = async (requestedUrl, options) => {
     requested.push([requestedUrl, options]);
-    return requestedUrl === directGeneralProblemUrl
+    return requestedUrl === generalProblemUrl
       ? { ok: true, url: requestedUrl, text: async () => '<div id="problem-content-vditor"><img src="./diagram.png"></div>' }
       : { ok: true, url: requestedUrl, headers: { get: () => null }, body: new Response(png).body };
   };
-  const app = setup('答案错误', { ok: true }, fetchProblem, directGeneralUrl, directGeneralProblemUrl);
+  const app = setup('答案错误', { ok: true }, fetchProblem, generalUrl, generalProblemUrl);
   app.document.getElementById('neuoj-helper-root').shadowRoot.querySelector('button').click();
   await flush();
   await flush();
-  assert.deepEqual(requested.map(item => item[0]), [directGeneralProblemUrl, target]);
+  assert.deepEqual(requested.map(item => item[0]), [generalProblemUrl, target]);
   assert.equal(requested[1][1].credentials, 'same-origin');
   assert.match(app.sent.images[0], /^data:image\/png;base64,/);
   app.emit({ type: 'DONE' });
@@ -234,7 +236,7 @@ test('无 Content-Length 的超大题图在读取中止并取消数据流', asyn
 test('WebVPN 其他代理前缀的题图不会被请求或发送', async () => {
   const fetchProblem = async target => ({ ok: true, url: target,
     text: async () => '<div id="problem-content-vditor"><img src="/https/other-token/private.png"></div>' });
-  const app = setup('答案错误', { ok: true }, fetchProblem);
+  const app = setup('答案错误', { ok: true }, fetchProblem, vpnUrl, vpnProblemUrl);
   const shadow = app.document.getElementById('neuoj-helper-root').shadowRoot;
   shadow.querySelector('button').click();
   await flush();
@@ -267,24 +269,55 @@ test('题图下载超时会取消请求并允许重新分析', async () => {
   assert.match(shadow.querySelector('.status').textContent, /超时/);
 });
 
+test('考试提交页点击后读取字母题号题面并发送分析', async () => {
+  const statement = problemHtml.replace('求幂', 'F - 测试题');
+  for (const origin of ['https://oj.neu.edu.cn',
+    'https://webvpn.neu.edu.cn/https/62304135386136393339346365373340bfebea318fd008d8f60d257088']) {
+    for (const submissionType of ['submission', 'submissions']) {
+      const examUrl = `${origin}/exam/46/${submissionType}/1699672`;
+      const examProblemUrl = `${origin}/exam/46/problem/F`;
+      let requestedUrl;
+      const app = setup('答案错误', { ok: true }, async url => {
+        requestedUrl = url;
+        return { ok: true, url, text: async () => statement };
+      }, examUrl, examProblemUrl);
+      const button = app.document.getElementById('neuoj-helper-root').shadowRoot.querySelector('button');
+      assert.equal(button.disabled, false);
+      assert.equal(app.fetchCount, 0);
+      assert.equal(app.sent, undefined);
+      button.click();
+      await flush();
+      assert.equal(requestedUrl, examProblemUrl);
+      assert.equal(app.sent.type, 'ANALYZE');
+      assert.match(app.sent.prompt, /题目：F - 测试题/);
+      assert.match(app.sent.prompt, /输入样例：[\s\S]*5 8/);
+      app.emit({ type: 'DONE' });
+    }
+  }
+});
+
 test('Contest 复数提交页点击后获取同比赛题面并发送分析', async () => {
-  let requestedUrl;
-  const fetchProblem = async url => {
-    requestedUrl = url;
-    return { ok: true, url, text: async () => contestProblemHtml };
-  };
-  const app = setup('答案错误', { ok: true }, fetchProblem, contestUrl, contestProblemUrl);
-  const button = app.document.getElementById('neuoj-helper-root').shadowRoot.querySelector('button');
-  assert.equal(button.disabled, false);
-  assert.equal(app.fetchCount, 0);
-  button.click();
-  await flush();
-  assert.equal(requestedUrl, contestProblemUrl);
-  assert.equal(app.sent.type, 'ANALYZE');
-  assert.match(app.sent.prompt, /题目：J - 状态转换/);
-  assert.match(app.sent.prompt, /按规则转换状态/);
-  assert.match(app.sent.prompt, /输入样例：[\s\S]*3/);
-  app.emit({ type: 'DONE' });
+  for (const [pageUrl, linkedProblem] of [[contestUrl, contestProblemUrl],
+    [vpnGeneralUrl.replace('/submissions/123', '/contest/162/submissions/1711165'),
+      vpnGeneralProblemUrl.replace('/problems/43', '/contest/162/problem/10')]]) {
+    let requestedUrl;
+    const fetchProblem = async url => {
+      requestedUrl = url;
+      return { ok: true, url, text: async () => contestProblemHtml };
+    };
+    const app = setup('答案错误', { ok: true }, fetchProblem, pageUrl, linkedProblem);
+    const button = app.document.getElementById('neuoj-helper-root').shadowRoot.querySelector('button');
+    assert.equal(button.disabled, false);
+    assert.equal(app.fetchCount, 0);
+    button.click();
+    await flush();
+    assert.equal(requestedUrl, linkedProblem);
+    assert.equal(app.sent.type, 'ANALYZE');
+    assert.match(app.sent.prompt, /题目：J - 状态转换/);
+    assert.match(app.sent.prompt, /按规则转换状态/);
+    assert.match(app.sent.prompt, /输入样例：[\s\S]*3/);
+    app.emit({ type: 'DONE' });
+  }
 });
 
 test('再次进入同一提交时直接恢复缓存，重新分析仍由用户点击触发', async () => {
@@ -433,7 +466,7 @@ test('缓存中的公式重新进入页面后仍被渲染，无效公式不妨�
 
 test('Firefox 全局对象分离时渲染用户原文的全部公式并保留源码', async () => {
   const answer = '错误位置在 `cout<<(n-1)*(m+1)<<endl;`：题意是求把 $m$ 个苹果分给 $n$ 个孩子的非负整数解数，即 $C(n+m-1,m)$ 对 $10^9+7$ 取模。源码却直接输出 $(n-1)\\cdot(m+1)$，既用错公式也未取模，因此出现 $360$、$-450386346$、$0$ 这类与标准答案不符的输出（如测试点 #001 标准答案为 $190187265$，用户输出为 $360$）。';
-  for (const [pageUrl, linkedProblem] of [[url, problemUrl], [directGeneralUrl, directGeneralProblemUrl]]) {
+  for (const [pageUrl, linkedProblem] of [[url, problemUrl], [vpnGeneralUrl, vpnGeneralProblemUrl]]) {
     const app = setup('答案错误', { ok: true }, undefined, pageUrl, linkedProblem, answer);
     await flush();
     const result = app.document.getElementById('neuoj-helper-root').shadowRoot.querySelector('.result');
@@ -456,8 +489,8 @@ test('MathJax 初始化失败时保留公式并记录初始化错误', async () 
   assert.equal(app.warnings[0][1].message, '本地模块加载失败');
 });
 
-test('直连提交页也渲染已缓存的公式', async () => {
-  const app = setup('答案错误', { ok: true }, undefined, directGeneralUrl, directGeneralProblemUrl, '$\\binom{n}{m}$');
+test('通用提交页渲染已缓存的公式', async () => {
+  const app = setup('答案错误', { ok: true }, undefined, generalUrl, generalProblemUrl, '$\\binom{n}{m}$');
   const result = app.document.getElementById('neuoj-helper-root').shadowRoot.querySelector('.result');
   await flush();
   assert.equal(result.querySelector('mjx-container').dataset.tex, '\\binom{n}{m}');
@@ -524,7 +557,7 @@ test('题面请求失败、跳转登录页或正文缺失时停止分析并可�
   for (const fetchProblem of [
     async () => { throw new Error('网络中断'); },
     async () => ({ ok: false, url: problemUrl }),
-    async () => ({ ok: true, url: 'https://webvpn.neu.edu.cn/login', text: async () => problemHtml }),
+    async () => ({ ok: true, url: 'https://oj.neu.edu.cn/login', text: async () => problemHtml }),
     async () => ({ ok: true, url: problemUrl, text: async () => '<html><body>登录</body></html>' })
   ]) {
     const app = setup('答案错误', { ok: true }, fetchProblem);
@@ -566,7 +599,7 @@ test('全 AC 保留面板和成功状态，但不能分析或读取缓存', () =
 
 test('通用提交页失败时可分析，AC 时显示禁用面板', async () => {
   const fetchProblem = async requested => ({ ok: true, url: requested, text: async () => problemHtml });
-  for (const [pageUrl, linkedProblem] of [[generalUrl, generalProblemUrl], [directGeneralUrl, directGeneralProblemUrl]]) {
+  for (const [pageUrl, linkedProblem] of [[generalUrl, generalProblemUrl], [vpnGeneralUrl, vpnGeneralProblemUrl]]) {
     const app = setup('答案错误', { ok: true }, fetchProblem, pageUrl, linkedProblem);
     const host = app.document.getElementById('neuoj-helper-root');
     assert.ok(host);
@@ -629,7 +662,7 @@ test('流式回答可复制 Markdown 原文，重新分析时禁用复制', asyn
 
 test('缓存回答可复制，评测状态变化后不可复制', async () => {
   const answer = '# 缓存结论\n\n$y = 2$';
-  const app = setup('答案错误', { ok: true }, undefined, directGeneralUrl, directGeneralProblemUrl, answer);
+  const app = setup('答案错误', { ok: true }, undefined, generalUrl, generalProblemUrl, answer);
   const shadow = app.document.getElementById('neuoj-helper-root').shadowRoot;
   const copy = shadow.querySelector('.copy');
   assert.equal(copy.disabled, false);
@@ -806,9 +839,8 @@ test('先出现 AC 测试点、后出现失败点时恢复分析能力', async (
 });
 
 
-test('直连及 WebVPN 显示思考进度，开始回答后不回退，重新分析清零', async () => {
-  for (const pageUrl of [url, directGeneralUrl]) {
-    const linked = pageUrl === url ? problemUrl : directGeneralProblemUrl;
+test('思考进度在回答后不回退，重新分析清零', async () => {
+  for (const [pageUrl, linked] of [[url, problemUrl], [vpnGeneralUrl, vpnGeneralProblemUrl]]) {
     const app = setup('答案错误', { ok: true }, async () => ({ ok: true, url: linked, text: async () => problemHtml }), pageUrl, linked);
     const shadow = app.document.getElementById('neuoj-helper-root').shadowRoot;
     const button = shadow.querySelector('button');

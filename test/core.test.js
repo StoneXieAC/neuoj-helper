@@ -54,6 +54,72 @@ test('仅识别两个允许域名下具有提交结构的页面', () => {
   assert.equal(core.isSubmissionPage(doc, direct), false);
 });
 
+test('四种提交场景和兜底路径支持字母数字题号', () => {
+  const origins = ['https://oj.neu.edu.cn',
+    'https://webvpn.neu.edu.cn/https/62304135386136393339346365373340bfebea318fd008d8f60d257088'];
+  const routes = [
+    ['', '/problems/'],
+    ['/training/8', '/part/68/problem/'],
+    ['/contest/42', '/problem/'],
+    ['/exam/46', '/problem/'],
+    ['/other/7', '/problem/']
+  ];
+  const doc = new JSDOM('<a>返回题目</a>').window.document;
+  const link = doc.querySelector('a');
+  for (const origin of origins) {
+    for (const [scope, problemPath] of routes) {
+      for (const submissionType of ['submission', 'submissions']) {
+        const submission = `${origin}${scope}/${submissionType}/1699672/?tab=source#tabs-source-code`;
+        assert.equal(core.isSubmissionPage(page(), submission), true);
+        for (const id of ['123', 'F', 'abc', 'aB12']) {
+          const problem = `${origin}${scope}${problemPath}${id}`;
+          for (const suffix of ['', '/']) {
+            link.setAttribute('href', `${problem}${suffix}?view=statement#content`);
+            assert.equal(core.problemUrl(doc, submission), `${problem}${suffix}?view=statement`);
+            link.setAttribute('href', new URL(`${problem}${suffix}`).pathname);
+            assert.equal(core.problemUrl(doc, submission), `${problem}${suffix}`);
+          }
+        }
+        for (const id of ['', 'a-b', 'a_b', '题号', 'F/extra', 'F%2FG', 'F%20G']) {
+          link.href = `${origin}${scope}${problemPath}${id}`;
+          assert.equal(core.problemUrl(doc, submission), null);
+        }
+        link.href = `${origin}${scope}${problemPath}F`;
+        link.textContent = '其他链接';
+        assert.equal(core.problemUrl(doc, submission), null);
+        link.textContent = '返回题目';
+        link.removeAttribute('href');
+        assert.equal(core.problemUrl(doc, submission), null);
+        const incomplete = page();
+        incomplete.getElementById('tabs-compile-info').remove();
+        assert.equal(core.isSubmissionPage(incomplete, submission), false);
+      }
+    }
+  }
+});
+
+test('考试题目链接拒绝错误范围、域名、代理前缀和路径结构', () => {
+  for (const origin of ['https://oj.neu.edu.cn',
+    'https://webvpn.neu.edu.cn/https/62304135386136393339346365373340bfebea318fd008d8f60d257088']) {
+    const submission = `${origin}/exam/46/submissions/1699672`;
+    const problem = `${origin}/exam/46/problem/F`;
+    const doc = new JSDOM('<a>返回题目</a>').window.document;
+    const link = doc.querySelector('a');
+    for (const bad of [problem.replace('/exam/46/', '/exam/47/'),
+      problem.replace('/exam/46/', '/contest/46/'),
+      problem.replace('/exam/46/', '/exam/46extra/'),
+      problem.replace('/problem/', '/problems/'),
+      problem.replace(new URL(problem).hostname, 'evil.example'),
+      'https://webvpn.neu.edu.cn/https/other-id/exam/46/problem/F']) {
+      link.href = bad;
+      assert.equal(core.problemUrl(doc, submission), null);
+    }
+    assert.equal(core.isSubmissionUrl(submission.replace('1699672', 'abc')), false);
+  }
+  const doc = new JSDOM('<a href="/training/8/part/abc/problem/F">返回题目</a>').window.document;
+  assert.equal(core.problemUrl(doc, direct), null);
+});
+
 test('Contest 提交能定位同范围内的题目链接', () => {
   const doc = new JSDOM('<a>返回题目</a>').window.document;
   const link = doc.querySelector('a');
@@ -81,9 +147,9 @@ test('Contest 题面沿用正文、标题和样例提取', () => {
 });
 
 test('最小页面样例提取题目链接、标题、公式、约束和样例', () => {
-  const submitted = new JSDOM(`<a href="${vpnProblem}">返回题目</a>`).window.document;
+  const submitted = new JSDOM(`<a href="${directProblem}">返回题目</a>`).window.document;
   const statement = new JSDOM('<div class="col-7"><div class="card mb-2"><div class="card-header"><a class="nav-link"><strong>求幂</strong></a></div></div><div id="problem-content-vditor"><p>计算 <span data-math="m^n">公式</span>。</p><p>Constraints: 1 到 10^9</p></div><div id="example-input">5 8</div><div id="example-output">390625</div></div>').window.document;
-  assert.equal(core.problemUrl(submitted, vpn), vpnProblem);
+  assert.equal(core.problemUrl(submitted, direct), directProblem);
   const problem = core.extractProblem(statement);
   assert.equal(problem.title, '求幂');
   assert.match(problem.body, /\$m\^n\$/);
@@ -118,8 +184,8 @@ test('通用提交页从返回题目链接读取全局题目，并限制同源�
 });
 
 test('通用页沿用源码、编译和测试点提取', () => {
-  const doc = page({ source: 'int main() { return 1; }', cases: caseHtml(1, '答案错误', 'Judge: 2<br>Team: 1') }, vpnGeneral);
-  const report = core.extractSubmission(doc, vpnGeneral);
+  const doc = page({ source: 'int main() { return 1; }', cases: caseHtml(1, '答案错误', 'Judge: 2<br>Team: 1') }, directGeneral);
+  const report = core.extractSubmission(doc, directGeneral);
   assert.equal(report.status, 'WA');
   assert.equal(report.source, 'int main() { return 1; }');
   assert.equal(report.cases[0].diff.expected, '2');
@@ -310,7 +376,7 @@ test('RE、TLE、MLE 筛选诊断字段，并识别混合状态', () => {
     caseHtml(2, '运行超时', '', 'Time limit exceeded', 'cpu-time: 5<br>time-result: exceeded'),
     caseHtml(3, '内存超限', '', 'Memory limit exceeded', 'memory-bytes: 999999<br>memory-result: exceeded')
   ].join('');
-  const report = core.extractSubmission(page({ cases }), vpn);
+  const report = core.extractSubmission(page({ cases }), direct);
   assert.equal(report.status, 'MIXED');
   assert.deepEqual(report.cases.map(item => item.status), ['RE', 'TLE', 'MLE']);
   const prompt = core.buildPrompt(report);
