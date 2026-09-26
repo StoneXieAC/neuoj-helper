@@ -23,9 +23,12 @@ test('XPI 核验拒绝无签名、内容变化、额外文件和重复文件', t
   for (const file of ['manifest.mf', 'mozilla.sf', 'mozilla.rsa']) zip.addFile(`META-INF/${file}`, Buffer.from('签名样例'));
   zip.writeZip(archive);
   assert.equal(verifyXpi(archive, source), true);
+  zip.addFile('manifest.json', Buffer.from('{\n  \"version\": \"0.1.0\"\n}\n'));
+  zip.writeZip(archive);
+  assert.equal(verifyXpi(archive, source), true);
   zip.addFile('manifest.json', Buffer.from('{}'));
   zip.writeZip(archive);
-  assert.throws(() => verifyXpi(archive, source), /内容/);
+  assert.throws(() => verifyXpi(archive, source), /清单字段/);
   zip.addFile('manifest.json', fs.readFileSync(path.join(source, 'manifest.json')));
   zip.addFile('extra.js', Buffer.from('额外文件'));
   zip.writeZip(archive);

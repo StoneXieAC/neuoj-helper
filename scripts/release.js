@@ -3,6 +3,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const { isDeepStrictEqual } = require('node:util');
 const { spawnSync } = require('node:child_process');
 const AdmZip = require('adm-zip');
 
@@ -29,7 +30,19 @@ function verifyXpi(archivePath, sourceDir = path.join(ROOT, 'dist/firefox')) {
   const actual = names.filter(name => !name.startsWith('META-INF/')).sort();
   if (JSON.stringify(actual) !== JSON.stringify(expected)) throw new Error('XPI 文件列表与构建不一致。');
   for (const name of expected) {
-    if (!zip.readFile(name).equals(fs.readFileSync(path.join(sourceDir, name)))) {
+    const signed = zip.readFile(name);
+    const built = fs.readFileSync(path.join(sourceDir, name));
+    if (name === 'manifest.json') {
+      let signedManifest;
+      try {
+        signedManifest = JSON.parse(signed.toString('utf8'));
+      } catch {
+        throw new Error('XPI 清单不是有效 JSON。');
+      }
+      if (!isDeepStrictEqual(signedManifest, JSON.parse(built.toString('utf8')))) {
+        throw new Error(`XPI 清单字段与构建不一致：${JSON.stringify(signedManifest)}`);
+      }
+    } else if (!signed.equals(built)) {
       throw new Error(`XPI 内容与构建不一致：${name}`);
     }
   }
