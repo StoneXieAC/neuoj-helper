@@ -1,5 +1,5 @@
 node_modules/
-.DS_Store
+**/.DS_Store
 /dist/
 /web-ext-artifacts/
 *.zip
@@ -11,3 +11,8 @@ node_modules/
 /clion-plugin/.intellijPlatform/
 /clion-plugin/build/
 /clion-plugin/.kotlin/
+*.log
+*.tmp
+*.bak
+*.orig
+*.rej

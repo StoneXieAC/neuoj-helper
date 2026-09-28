@@ -6,7 +6,7 @@ plugins {
 }
 
 group = "cn.neuoj"
-version = "0.1.0"
+version = "0.2.0-beta"
 repositories {
   intellijPlatform { localPlatformArtifacts() }
   providers.gradleProperty("mavenCentralMirror").orNull?.let { maven(it) }

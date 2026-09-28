@@ -10,7 +10,7 @@
 ./gradlew test buildPlugin
 ```
 
-Gradle Wrapper 默认将下载的 Gradle、Kotlin 与 IntelliJ Platform 依赖存放在仓库根目录的 `.deps/gradle/`，该目录不会提交到 Git。已有本机安装的 CLion 时可显式指定路径：
+Windows 可使用 `gradlew.bat test buildPlugin`。POSIX Gradle Wrapper 默认将下载的 Gradle 和 Kotlin 依赖存放在仓库根目录的 `.deps/gradle/`，该目录不会提交到 Git。已有本机安装的 CLion 时可显式指定路径：
 
 ```sh
 ./gradlew test buildPlugin -PlocalIdePath="/实际路径/CLion.app"
@@ -25,7 +25,7 @@ Gradle Wrapper 默认将下载的 Gradle、Kotlin 与 IntelliJ Platform 依赖�
 NEUOJ_TEST_GXX="$(which g++)" NEUOJ_TEST_GCC="$(which gcc)" ./gradlew test --rerun-tasks -PlocalIdePath="/实际路径/CLion.app"
 ```
 
-测试未提供此变量时仍运行比较、协议、工作区、进程和编译器识别测试，跳过真实编译闭环。插件 ZIP 位于 `build/distributions/`。不自动安装系统编译器。
+测试未提供此变量时仍运行比较、协议、工作区、进程和编译器识别测试，跳过真实编译闭环。插件 ZIP 位于 `build/distributions/`，也随 [v0.2.0-beta 预发布](https://github.com/StoneXieAC/neuoj-helper/releases/tag/v0.2.0-beta) 提供。不自动安装系统编译器。
 
 ## 使用
 

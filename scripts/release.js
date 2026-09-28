@@ -60,7 +60,7 @@ function packageChrome() {
   const zip = new AdmZip();
   const sourceDir = path.join(ROOT, 'dist/chrome');
   for (const file of filesIn(sourceDir)) zip.addFile(file, fs.readFileSync(path.join(sourceDir, file)));
-  zip.writeZip(path.join(RELEASE_DIR, `neuoj-helper-${manifest().version}-chrome.zip`));
+  zip.writeZip(path.join(RELEASE_DIR, `neuoj-helper-${manifest().version_name || manifest().version}-chrome.zip`));
 }
 
 function withSigningSource(sourceDir, signingDir, action) {
@@ -122,7 +122,7 @@ async function signFirefox() {
   const id = current.browser_specific_settings.gecko.id;
   const apiUrl = `https://addons.mozilla.org/api/v5/addons/addon/${encodeURIComponent(id)}/versions/${encodeURIComponent(current.version)}/`;
   fs.mkdirSync(RELEASE_DIR, { recursive: true });
-  const output = path.join(RELEASE_DIR, `neuoj-helper-${current.version}-firefox.xpi`);
+  const output = path.join(RELEASE_DIR, `neuoj-helper-${current.version_name || current.version}-firefox.xpi`);
   fs.rmSync(output, { force: true });
   const previous = await existingVersion(fetch, apiUrl, key, secret);
   if (!previous) {

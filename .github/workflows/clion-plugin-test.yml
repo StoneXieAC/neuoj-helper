@@ -2,7 +2,7 @@ name: CLion 插件跨平台测试
 
 on:
   push:
-    branches: [main]
+    branches: [main, feat/clion-integration]
     paths:
       - 'clion-plugin/**'
       - '.github/workflows/clion-plugin-test.yml'
@@ -20,12 +20,12 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: '21'
-      - uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/setup-gradle@v6
       - name: 测试并构建插件
         shell: bash
         working-directory: clion-plugin
