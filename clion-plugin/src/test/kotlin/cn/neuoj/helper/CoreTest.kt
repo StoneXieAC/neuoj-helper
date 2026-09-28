@@ -56,6 +56,59 @@ class CoreTest {
       storage.delete(other.id); assertTrue(storage.list().isEmpty()); assertTrue(Files.exists(source))
     } finally { root.toFile().deleteRecursively() }
   }
+  @Test fun sampleEditsAndRunStatesStayWithTheirIds() {
+    val root = Files.createTempDirectory("neuoj-samples-test")
+    try {
+      val source = root.resolve("existing.cpp")
+      Files.writeString(source, "int main(){}")
+      val workspace = Workspace()
+      val original = problem()
+      workspace.importProblem(original, source)
+      val imported = workspace.load(original.id)!!
+      val first = imported.samples.first()
+      assertEquals("1\n", first.originalInput)
+      first.input = "changed\n"
+      val states = SampleRunState()
+      val passed = ProcessResult("1\n", "", 0, 12)
+      states.start(listOf(first.id))
+      assertEquals(SamplePhase.COMPILING, states.phase(first.id))
+      states.running(first.id)
+      assertEquals(SamplePhase.RUNNING, states.phase(first.id))
+      states.complete(first.id, passed)
+      assertEquals(SamplePhase.FINISHED, states.phase(first.id))
+      val copy = first.copy(id = "custom-1", custom = true, originalInput = null)
+      imported.samples.add(copy)
+      imported.samples.add(Sample("custom-2", "", "", true))
+      workspace.save(imported)
+      assertSame(passed, states.results[first.id])
+      imported.samples.remove(copy)
+      states.reset(copy.id)
+      assertSame(passed, states.results[first.id])
+      states.start(listOf("custom-2"))
+      assertSame(passed, states.results[first.id])
+      states.compileError(listOf("custom-2"), "编译器报错")
+      assertEquals(SamplePhase.COMPILE_ERROR, states.phase("custom-2"))
+      assertEquals("编译器报错", states.compileDiagnostic)
+      states.start(listOf(first.id))
+      states.compileError(listOf(first.id), "TC1 编译错误")
+      states.start(listOf("custom-2"))
+      states.compileDiagnostic = "正在编译…"
+      assertEquals("TC1 编译错误", states.diagnostic(first.id))
+      states.complete("custom-2", passed)
+      states.compileDiagnostic = "退出码：0"
+      assertEquals("TC1 编译错误", states.diagnostic(first.id))
+      states.reset("custom-2")
+      assertNull(states.diagnostic("custom-2"))
+      first.restoreInput()
+      states.reset(first.id)
+      assertEquals("1\n", first.input)
+      assertEquals(SamplePhase.IDLE, states.phase(first.id))
+      assertNull(states.results[first.id])
+      assertNull(states.diagnostic(first.id))
+      workspace.importProblem(original.copy(samples = mutableListOf(Sample("official-1", "new\n", "new\n"))), source)
+      assertEquals("new\n", workspace.load(original.id)!!.samples.first().originalInput)
+    } finally { root.toFile().deleteRecursively() }
+  }
   @Test fun compilerDetectionAndArguments() {
     val root = Files.createTempDirectory("neuoj compiler test")
     try {
@@ -106,6 +159,10 @@ class CoreTest {
       assertEquals(result.compile.stderr, 0, result.compile.exitCode)
       assertTrue(CompareMode.EXACT.matches(result.tests.single().process.stdout, p.samples.single().output))
       assertFalse(Files.exists(root.resolve("runner-created.txt")))
+      val phases = mutableListOf<String>()
+      Runner().run(p, source, compiler, "C++14", AtomicBoolean(),
+        onRunning = { phases.add("运行:$it") }, onCompleted = { phases.add("完成:${it.sampleId}") })
+      assertEquals(listOf("运行:official-1", "完成:official-1"), phases)
       Files.writeString(source, "invalid code")
       assertTrue(Runner().run(p, source, compiler, "C++14", AtomicBoolean()).tests.isEmpty())
       assertEquals(listOf(source), Files.list(root).use { it.toList() })

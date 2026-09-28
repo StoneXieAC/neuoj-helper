@@ -6,7 +6,35 @@ import java.net.URI
 import java.nio.file.Files
 import java.nio.file.Path
 
-data class Sample(var id: String = "", var input: String = "", var output: String = "", var custom: Boolean = false)
+data class Sample(var id: String = "", var input: String = "", var output: String = "", var custom: Boolean = false,
+  var originalInput: String? = null) {
+  fun restoreInput() { if (!custom) input = originalInput ?: input }
+}
+
+enum class SamplePhase { IDLE, COMPILING, RUNNING, FINISHED, COMPILE_ERROR, CANCELLED }
+
+class SampleRunState {
+  val results = mutableMapOf<String, ProcessResult>()
+  val phases = mutableMapOf<String, SamplePhase>()
+  private val compileDiagnostics = mutableMapOf<String, String>()
+  var compileDiagnostic = "尚未编译"
+  fun phase(id: String) = phases[id] ?: SamplePhase.IDLE
+  fun diagnostic(id: String) = compileDiagnostics[id]
+  fun start(ids: List<String>) = ids.forEach {
+    results.remove(it); compileDiagnostics.remove(it); phases[it] = SamplePhase.COMPILING
+  }
+  fun running(id: String) { phases[id] = SamplePhase.RUNNING }
+  fun complete(id: String, result: ProcessResult) { results[id] = result; phases[id] = SamplePhase.FINISHED }
+  fun compileError(ids: List<String>, diagnostic: String) {
+    compileDiagnostic = diagnostic
+    ids.forEach { phases[it] = SamplePhase.COMPILE_ERROR; compileDiagnostics[it] = diagnostic }
+  }
+  fun cancelPending(ids: List<String>) = ids.forEach {
+    if (phase(it) == SamplePhase.COMPILING || phase(it) == SamplePhase.RUNNING) phases[it] = SamplePhase.CANCELLED
+  }
+  fun reset(id: String) { results.remove(id); phases.remove(id); compileDiagnostics.remove(id) }
+  fun clear() { results.clear(); phases.clear(); compileDiagnostics.clear(); compileDiagnostic = "尚未编译" }
+}
 data class Problem(
   var protocolVersion: Int = 1, var id: String = "", var url: String = "", var title: String = "",
   var statement: String = "", var images: List<String> = emptyList(), var timeLimitMs: Long? = null,
@@ -80,7 +108,7 @@ class Workspace {
     val path = source.toAbsolutePath().normalize()
     val previousId = sources.entries.firstOrNull { it.value == path && it.key != problem.id }?.key
     if (previousId != null) { sources.remove(previousId); problems.remove(previousId) }
-    val merged = problem.copy(samples = problem.samples.map { it.copy() }.toMutableList())
+    val merged = problem.copy(samples = problem.samples.map { it.copy(originalInput = it.input) }.toMutableList())
     problems[problem.id]?.samples?.filter { it.custom }?.forEach { merged.samples.add(it) }
     problems[problem.id] = merged
     sources[problem.id] = path

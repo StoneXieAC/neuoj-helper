@@ -84,7 +84,8 @@ data class TestResult(val sampleId: String, val process: ProcessResult)
 data class RunResult(val compile: ProcessResult, val tests: List<TestResult>)
 
 class Runner {
-  fun run(problem: Problem, source: Path, compiler: String, standard: String, cancelled: AtomicBoolean): RunResult {
+  fun run(problem: Problem, source: Path, compiler: String, standard: String, cancelled: AtomicBoolean,
+    onRunning: (String) -> Unit = {}, onCompleted: (TestResult) -> Unit = {}): RunResult {
     require(Files.isRegularFile(source)) { "关联的代码文件不存在。" }
     Compiler.validate(compiler)
     val temp = Files.createTempDirectory("neuoj-run-")
@@ -95,7 +96,10 @@ class Runner {
       val results = mutableListOf<TestResult>()
       for (sample in problem.samples) {
         if (cancelled.get()) break
-        results.add(TestResult(sample.id, Processes.execute(listOf(binary.toString()), temp, sample.input, problem.timeLimitMs ?: 2000, cancelled)))
+        onRunning(sample.id)
+        val result = TestResult(sample.id, Processes.execute(listOf(binary.toString()), temp, sample.input, problem.timeLimitMs ?: 2000, cancelled))
+        results.add(result)
+        onCompleted(result)
       }
       return RunResult(compile, results)
     } finally {
