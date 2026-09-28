@@ -399,8 +399,14 @@ restrictStorage().catch(console.error);
 chrome.action.onClicked.addListener(tab => { openOptionsPopup(tab?.windowId).catch(console.error); });
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (!['OPEN_OPTIONS', 'GET_CACHED_RESULT', 'TEST_CONNECTION'].includes(message?.type)) return false;
+  if (!['OPEN_OPTIONS', 'GET_CACHED_RESULT', 'TEST_CONNECTION', 'IDE_IMPORT', 'OPEN_IDE_OPTIONS'].includes(message?.type)) return false;
   (async () => {
+    if (message.type === 'IDE_IMPORT') return importToIde(message.problem, sender);
+    if (message.type === 'OPEN_IDE_OPTIONS') {
+      if (!ideSource(sender?.url)) throw new Error('只能从 NEUOJ 题目页导入。');
+      await openOptionsPopup(sender.tab?.windowId);
+      return { ok: true };
+    }
     if (message.type === 'TEST_CONNECTION') return testConnection(message, sender);
     validateSender(sender);
     if (message.type === 'OPEN_OPTIONS') {
@@ -449,3 +455,56 @@ chrome.runtime.onConnect.addListener(port => {
       }).finally(() => { timeout.clear(); if (!disconnected) port.disconnect(); });
   });
 });
+
+// IDE 导入单独验证题目页，不放宽原有分析消息的提交页限制。
+function ideSource(raw) {
+  try {
+    const url = new URL(raw);
+    if (url.protocol !== 'https:' || url.username || url.password || url.port) return null;
+    let path = url.pathname;
+    const vpn = url.hostname === 'webvpn.neu.edu.cn';
+    if (vpn) {
+      if (!path.startsWith(`${VPN_PREFIX}/`)) return null;
+      path = path.slice(VPN_PREFIX.length);
+    } else if (url.hostname !== 'oj.neu.edu.cn') return null;
+    if (!/^\/(?:problems\/[A-Za-z0-9]+|training\/\d+\/part\/\d+\/problem\/[A-Za-z0-9]+|group\/\d+\/(?:problems|problem)\/[A-Za-z0-9]+|(?:contest|exam)\/\d+\/problem\/[A-Za-z0-9]+)\/?$/.test(path)) return null;
+    return vpn ? `webvpn:${path.replace(/\/$/, '')}` : `https://oj.neu.edu.cn${path.replace(/\/$/, '')}`;
+  } catch { return null; }
+}
+
+async function importToIde(problem, sender) {
+  const identity = ideSource(sender?.url);
+  if (!identity || problem?.id !== identity || ideSource(problem?.url) !== identity || problem.protocolVersion !== 1 ||
+    typeof problem.title !== 'string' || typeof problem.statement !== 'string' ||
+    !Array.isArray(problem.samples) || !problem.samples.length || problem.samples.length > 100 ||
+    problem.samples.some(sample => typeof sample.id !== 'string' || typeof sample.input !== 'string' || typeof sample.output !== 'string')) {
+    throw new Error('题目导入数据无效。');
+  }
+  const body = JSON.stringify(problem);
+  if (body.length > 2 * 1024 * 1024) throw new Error('题目数据过大。');
+  const { idePort = 27121 } = await chrome.storage.local.get(['idePort']);
+  if (!Number.isInteger(idePort) || idePort < 1024 || idePort > 65535) throw new Error('IDE 连接端口无效。');
+  if (!await chrome.permissions.contains({ origins: ['http://127.0.0.1/*'] })) throw new Error('请在连接设置中授予本机连接权限。');
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 10000);
+  async function request(path, options = {}) {
+    const response = await fetch(`http://127.0.0.1:${idePort}/v1/${path}`, {
+      ...options, headers: { 'Content-Type': 'application/json' },
+      signal: controller.signal, redirect: 'error', credentials: 'omit'
+    });
+    if (response.status === 403) throw new Error('IDE 拒绝了当前扩展的连接来源。');
+    if (!response.ok) throw new Error(response.status === 409 ? '请在 CLion 中指定接收项目。' : `IDE 请求失败（${response.status}）。`);
+    try { return await response.json(); } catch { throw new Error('IDE 返回数据无效。'); }
+  }
+  try {
+    const capabilities = await request('capabilities');
+    if (capabilities.protocolVersion !== 1 || !capabilities.capabilities?.includes('importProblem')) throw new Error('IDE 协议版本不兼容。');
+    const result = await request('problems', { method: 'POST', body });
+    if (!result.ok) throw new Error('IDE 未能完成导入。');
+    return { ok: true };
+  } catch (error) {
+    if (controller.signal.aborted) throw new Error('IDE 连接超时。');
+    if (error instanceof TypeError) throw new Error('无法连接 IDE，请确认插件已启动及端口一致。');
+    throw error;
+  } finally { clearTimeout(timer); }
+}

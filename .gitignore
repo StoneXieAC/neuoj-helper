@@ -6,3 +6,8 @@ node_modules/
 *.xpi
 .env
 .env.*
+/.deps/
+/clion-plugin/.gradle/
+/clion-plugin/.intellijPlatform/
+/clion-plugin/build/
+/clion-plugin/.kotlin/

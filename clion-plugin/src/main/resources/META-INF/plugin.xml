@@ -1,0 +1,12 @@
+<idea-plugin>
+  <id>cn.neuoj.helper</id>
+  <name>NEUOJ Helper</name>
+  <vendor>NEUOJ Helper</vendor>
+  <description>NEUOJ Helper imports programming problems and samples into the IDE, compiles C++ with GNU g++, and compares local output. 导入题目与样例后，可在本地编译运行并比较结果。</description>
+  <depends>com.intellij.modules.platform</depends>
+  <depends>com.intellij.clion</depends>
+  <extensions defaultExtensionNs="com.intellij">
+    <toolWindow id="NEUOJ" anchor="right" factoryClass="cn.neuoj.helper.NeuojToolWindowFactory"/>
+    <applicationConfigurable id="cn.neuoj.helper.settings" displayName="NEUOJ Helper" instance="cn.neuoj.helper.HelperConfigurable"/>
+  </extensions>
+</idea-plugin>

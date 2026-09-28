@@ -4,23 +4,59 @@
   "name": "NEUOJ 小助手",
   "version": "0.1.0",
   "description": "提取 NEUOJ 提交中的排错信息，按需调用兼容 OpenAI 的模型分析。",
-  "icons": { "128": "logo.png" },
-  "permissions": ["storage"],
-  "optional_host_permissions": ["https://*/*", "http://localhost/*", "http://127.0.0.1/*"],
-  "background": { "service_worker": "src/background.js" },
-  "options_ui": { "page": "src/options.html", "open_in_tab": true },
-  "action": { "default_title": "NEUOJ 小助手", "default_icon": "logo.png" },
+  "icons": {
+    "128": "logo.png"
+  },
+  "permissions": [
+    "storage"
+  ],
+  "host_permissions": [
+    "http://127.0.0.1/*"
+  ],
+  "optional_host_permissions": [
+    "https://*/*",
+    "http://localhost/*"
+  ],
+  "background": {
+    "service_worker": "src/background.js"
+  },
+  "options_ui": {
+    "page": "src/options.html",
+    "open_in_tab": true
+  },
+  "action": {
+    "default_title": "NEUOJ 小助手",
+    "default_icon": "logo.png"
+  },
   "content_scripts": [
     {
-      "matches": ["https://oj.neu.edu.cn/*", "https://webvpn.neu.edu.cn/*"],
-      "js": ["vendor/markdown-it.umd.min.js", "vendor/texmath/texmath.js", "src/mathjax-config.js", "vendor/mathjax/tex-svg.js", "src/core.js", "src/content.js"],
+      "matches": [
+        "https://oj.neu.edu.cn/*",
+        "https://webvpn.neu.edu.cn/*"
+      ],
+      "js": [
+        "vendor/markdown-it.umd.min.js",
+        "vendor/texmath/texmath.js",
+        "src/mathjax-config.js",
+        "vendor/mathjax/tex-svg.js",
+        "src/core.js",
+        "src/content.js",
+        "src/ide-content.js"
+      ],
       "run_at": "document_idle"
     }
   ],
   "web_accessible_resources": [
     {
-      "resources": ["vendor/texmath/texmath.css", "vendor/mathjax/ui/safe.js", "vendor/mathjax-newcm-font/svg/dynamic/*"],
-      "matches": ["https://oj.neu.edu.cn/*", "https://webvpn.neu.edu.cn/*"]
+      "resources": [
+        "vendor/texmath/texmath.css",
+        "vendor/mathjax/ui/safe.js",
+        "vendor/mathjax-newcm-font/svg/dynamic/*"
+      ],
+      "matches": [
+        "https://oj.neu.edu.cn/*",
+        "https://webvpn.neu.edu.cn/*"
+      ]
     }
   ]
 }

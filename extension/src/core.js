@@ -157,6 +157,61 @@
       outputExample: problemText(doc.getElementById('example-output')) };
   }
 
+  function problemIdentity(raw) {
+    try {
+      const url = new URL(raw);
+      if (url.protocol !== 'https:' || url.username || url.password || url.port) return null;
+      let path = url.pathname;
+      const vpn = url.hostname === 'webvpn.neu.edu.cn';
+      if (vpn) {
+        if (!path.startsWith(`${VPN_PREFIX}/`)) return null;
+        path = path.slice(VPN_PREFIX.length);
+      } else if (url.hostname !== 'oj.neu.edu.cn') return null;
+      if (!/^\/(?:problems\/[A-Za-z0-9]+|training\/\d+\/part\/\d+\/problem\/[A-Za-z0-9]+|group\/\d+\/(?:problems|problem)\/[A-Za-z0-9]+|(?:contest|exam)\/\d+\/problem\/[A-Za-z0-9]+)\/?$/.test(path)) return null;
+      path = path.replace(/\/$/, '');
+      url.hash = '';
+      return { id: vpn ? `webvpn:${path}` : `https://oj.neu.edu.cn${path}`, url: url.href };
+    } catch { return null; }
+  }
+
+  function sampleText(node) {
+    const pre = node.querySelector('pre');
+    if (pre || node.tagName === 'PRE') return (pre || node).textContent.replace(/\r\n/g, '\n');
+    const copy = node.cloneNode(true);
+    copy.querySelectorAll('button, script, style').forEach(item => item.remove());
+    if (copy.firstChild?.nodeType === 3) copy.firstChild.nodeValue = copy.firstChild.nodeValue.replace(/^\r?\n[ \t]+/, '');
+    if (copy.lastChild?.nodeType === 3) copy.lastChild.nodeValue = copy.lastChild.nodeValue.replace(/\r?\n[ \t]+$/, '');
+    copy.querySelectorAll('br').forEach(br => {
+      // <br> 后的源码换行及缩进属于页面排版；同行空格仍是样例内容。
+      if (br.nextSibling?.nodeType === 3) br.nextSibling.nodeValue = br.nextSibling.nodeValue.replace(/^\r?\n[ \t]*/, '');
+      br.replaceWith('\n');
+    });
+    return copy.textContent.replace(/\r\n/g, '\n');
+  }
+
+  function extractIdeProblem(doc, raw) {
+    const identity = problemIdentity(raw);
+    const problem = identity && extractProblem(doc, raw);
+    if (!problem) throw new Error('当前页面不是可识别的 NEUOJ 题目页。');
+    const inputs = [...doc.querySelectorAll('[id="example-input"], [id^="example-input-"]')];
+    const outputs = [...doc.querySelectorAll('[id="example-output"], [id^="example-output-"]')];
+    if (!inputs.length || inputs.length !== outputs.length) throw new Error('题目缺少样例或输入输出无法配对。');
+    const usedOutputs = new Set();
+    const samples = inputs.map((input, index) => {
+      const output = outputs.find(item => !usedOutputs.has(item) && item.id === input.id.replace('example-input', 'example-output'));
+      if (!output) throw new Error('样例输入输出无法配对。');
+      usedOutputs.add(output);
+      return { id: `official-${index + 1}`, input: sampleText(input), output: sampleText(output) };
+    });
+    const headers = [...doc.querySelectorAll('.card-header')].map(node => node.textContent).join('\n');
+    const time = headers.match(/(?:^|\s)(\d+(?:\.\d+)?)\s*(ms|s)\b/i);
+    const memory = headers.match(/(?:^|\s)(\d+)\s*MB\b/i);
+    return { protocolVersion: 1, ...identity, title: problem.title || '未命名题目', statement: problem.body,
+      images: (problem.images || []).filter(Boolean),
+      timeLimitMs: time ? Math.max(1, Math.round(Number(time[1]) * (time[2].toLowerCase() === 's' ? 1000 : 1))) : null,
+      memoryLimitMb: memory ? Number(memory[1]) : null, samples };
+  }
+
   function codeText(node) {
     if (!node) return '';
     const rows = [...node.querySelectorAll('td.hljs-ln-code')];
@@ -378,6 +433,6 @@
     return prompt.length > MAX_PROMPT ? bounded(prompt, MAX_PROMPT) : prompt;
   }
 
-  return { TRUNCATED, DEFAULTS, MAX_PROMPT, isSubmissionUrl, isSubmissionPage, problemUrl, extractProblem, extractSubmission,
+  return { problemIdentity, sampleText, extractIdeProblem, TRUNCATED, DEFAULTS, MAX_PROMPT, isSubmissionUrl, isSubmissionPage, problemUrl, extractProblem, extractSubmission,
     buildPrompt, classify, parseDiff, bounded, firstDifference, usefulSystem };
 });

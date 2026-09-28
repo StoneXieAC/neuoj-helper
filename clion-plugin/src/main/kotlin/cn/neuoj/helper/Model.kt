@@ -1,0 +1,110 @@
+package cn.neuoj.helper
+
+import com.google.gson.Gson
+import com.google.gson.JsonParser
+import java.net.URI
+import java.nio.file.Files
+import java.nio.file.Path
+import java.nio.file.StandardCopyOption
+import java.security.MessageDigest
+
+data class Sample(var id: String = "", var input: String = "", var output: String = "", var custom: Boolean = false)
+data class Problem(
+  var protocolVersion: Int = 1, var id: String = "", var url: String = "", var title: String = "",
+  var statement: String = "", var images: List<String> = emptyList(), var timeLimitMs: Long? = null,
+  var memoryLimitMb: Long? = null, var samples: MutableList<Sample> = mutableListOf()
+)
+
+enum class CompareMode(val label: String) {
+  TOKENS("忽略空白"), EXACT("逐字比较");
+  fun matches(actual: String, expected: String): Boolean = when (this) {
+    TOKENS -> tokens(actual) == tokens(expected)
+    EXACT -> actual.replace("\r\n", "\n") == expected.replace("\r\n", "\n")
+  }
+  private fun tokens(value: String) = value.split(Regex("(?U)\\s+")).filter { it.isNotEmpty() }
+}
+
+object Protocol {
+  const val VPN = "/https/62304135386136393339346365373340bfebea318fd008d8f60d257088"
+  private val pathPattern = Regex("/(?:problems/[A-Za-z0-9]+|training/[0-9]+/part/[0-9]+/problem/[A-Za-z0-9]+|group/[0-9]+/(?:problems|problem)/[A-Za-z0-9]+|(?:contest|exam)/[0-9]+/problem/[A-Za-z0-9]+)/?")
+  fun identity(raw: String): String? = runCatching {
+    val uri = URI(raw)
+    if (uri.scheme != "https" || uri.rawUserInfo != null || uri.port != -1) return null
+    val vpn = uri.host == "webvpn.neu.edu.cn"
+    var path = uri.rawPath ?: return null
+    if (vpn) {
+      if (!path.startsWith("$VPN/")) return null
+      path = path.removePrefix(VPN)
+    } else if (uri.host != "oj.neu.edu.cn") return null
+    if (!pathPattern.matches(path)) return null
+    (if (vpn) "webvpn:" else "https://oj.neu.edu.cn") + path.trimEnd('/')
+  }.getOrNull()
+  fun parse(raw: String): Problem {
+    val json = JsonParser.parseString(raw).asJsonObject
+    require(json.get("protocolVersion")?.toString() == "1") { "协议版本不兼容。" }
+    fun stringField(obj: com.google.gson.JsonObject, name: String) {
+      val value = obj.get(name)
+      require(value != null && value.isJsonPrimitive && value.asJsonPrimitive.isString) { "字段类型无效。" }
+    }
+    for (field in listOf("id", "url", "title", "statement")) stringField(json, field)
+    val samples = json.get("samples")
+    require(samples != null && samples.isJsonArray && samples.asJsonArray.size() in 1..100) { "样例无效。" }
+    samples.asJsonArray.forEach { element ->
+      val sample = element.asJsonObject
+      for (field in listOf("id", "input", "output")) stringField(sample, field)
+    }
+    for (field in listOf("timeLimitMs", "memoryLimitMb")) {
+      val value = json.get(field)
+      require(value == null || value.isJsonNull || (value.isJsonPrimitive && value.asJsonPrimitive.isNumber && Regex("[0-9]+").matches(value.toString()))) { "资源限制无效。" }
+    }
+    val images = json.get("images")
+    require(images == null || (images.isJsonArray && images.asJsonArray.all { it.isJsonPrimitive && it.asJsonPrimitive.isString })) { "图片地址无效。" }
+    return Gson().fromJson(json, Problem::class.java).also { validate(it) }
+  }
+  fun validate(problem: Problem) {
+    require(problem.protocolVersion == 1) { "协议版本不兼容。" }
+    require(identity(problem.url) == problem.id && problem.id.isNotEmpty()) { "题目地址无效。" }
+    require(problem.title.isNotBlank() && problem.title.length <= 1000 && problem.statement.length <= 1_000_000) { "题面无效。" }
+    require(problem.samples.size in 1..100 && problem.samples.map { it.id }.distinct().size == problem.samples.size) { "样例无效。" }
+    require(problem.samples.all { it.id.isNotBlank() && it.input.length <= 500_000 && it.output.length <= 500_000 && !it.custom }) { "样例无效。" }
+    require(problem.timeLimitMs == null || problem.timeLimitMs!! in 1..300_000) { "时间限制无效。" }
+    require(problem.images.size <= 100 && problem.images.all { URI(it).scheme == "https" }) { "图片地址无效。" }
+  }
+}
+
+fun digest(value: String): String = MessageDigest.getInstance("SHA-256").digest(value.toByteArray()).joinToString("") { "%02x".format(it) }
+
+class Workspace(private val root: Path) {
+  private val gson = Gson()
+  fun directory(id: String): Path = root.resolve(digest(id))
+  @Synchronized fun importProblem(problem: Problem): Path {
+    Protocol.validate(problem)
+    val dir = directory(problem.id)
+    Files.createDirectories(dir)
+    val previous = load(problem.id)
+    val merged = problem.copy(samples = problem.samples.map { it.copy() }.toMutableList())
+    previous?.samples?.filter { it.custom }?.forEach { merged.samples.add(it) }
+    val source = dir.resolve("main.cpp")
+    if (!Files.exists(source)) Files.writeString(source, "#include <bits/stdc++.h>\nusing namespace std;\n\nint main() {\n  ios::sync_with_stdio(false);\n  cin.tie(0);\n  return 0;\n}\n")
+    save(merged)
+    return source
+  }
+  @Synchronized fun save(problem: Problem) {
+    val dir = directory(problem.id)
+    Files.createDirectories(dir)
+    val temp = Files.createTempFile(dir, "problem-", ".tmp")
+    try {
+      Files.writeString(temp, gson.toJson(problem))
+      Files.move(temp, dir.resolve("problem.json"), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
+    } finally { Files.deleteIfExists(temp) }
+  }
+  @Synchronized fun load(id: String): Problem? = runCatching { gson.fromJson(Files.readString(directory(id).resolve("problem.json")), Problem::class.java) }.getOrNull()
+  @Synchronized fun list(): List<Problem> {
+    if (!Files.exists(root)) return emptyList()
+    return Files.list(root).use { stream -> stream.map { dir -> runCatching { gson.fromJson(Files.readString(dir.resolve("problem.json")), Problem::class.java) }.getOrNull() }.filter { it != null }.toList().filterNotNull() }.sortedBy { it.title }
+  }
+  @Synchronized fun delete(id: String) {
+    val dir = directory(id)
+    if (Files.exists(dir)) Files.walk(dir).use { paths -> paths.sorted(Comparator.reverseOrder()).forEach { Files.delete(it) } }
+  }
+}
