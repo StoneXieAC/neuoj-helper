@@ -25,6 +25,13 @@ class ProjectWorkspace(val project: Project) {
   }
 }
 
+internal fun activeSourceFile(project: Project): Path? {
+  val editor = FileEditorManager.getInstance(project).selectedTextEditor ?: return null
+  val file = FileDocumentManager.getInstance().getFile(editor.document) ?: return null
+  if (!file.isInLocalFileSystem) return null
+  return Path.of(file.path).takeIf { Files.isRegularFile(it) }
+}
+
 @Service(Service.Level.APP)
 class IdeBridge : Disposable {
   @Volatile private var server: LocalEndpoint? = null
@@ -52,11 +59,7 @@ class IdeBridge : Disposable {
               ?: throw NoReceiverException()
             val target = frame.project ?: throw NoReceiverException()
             if (target.isDisposed) throw NoReceiverException()
-            val editor = FileEditorManager.getInstance(target).selectedTextEditor ?: throw NoReceiverException()
-            val file = FileDocumentManager.getInstance().getFile(editor.document) ?: throw NoReceiverException()
-            if (!file.isInLocalFileSystem) throw NoReceiverException()
-            val source = Path.of(file.path)
-            if (!Files.isRegularFile(source)) throw NoReceiverException()
+            val source = activeSourceFile(target) ?: throw NoReceiverException()
             val storage = target.getService(ProjectWorkspace::class.java)
             storage.workspace.importProblem(problem, source)
             storage.lastImportedId = problem.id

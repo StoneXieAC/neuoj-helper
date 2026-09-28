@@ -30,7 +30,6 @@ import java.awt.event.FocusEvent
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
 import java.awt.event.MouseWheelEvent
-import java.nio.file.Files
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
 import javax.swing.*
@@ -590,10 +589,10 @@ class HelperPanel(private val project: Project) : JPanel(BorderLayout(0, 6)), Di
   private fun runInWriteIntent(sampleId: String?) {
     if (running) return
     val p = problem ?: return
-    val source = service.workspace.source(p.id)
-    if (source == null || !Files.isRegularFile(source)) { updateStatus("关联的代码文件不存在，请重新导入题目", true); return }
+    val source = activeSourceFile(project)
+    if (source == null) { updateStatus("请先在编辑器中打开并保存本地代码文件", true); return }
     val file = com.intellij.openapi.vfs.LocalFileSystem.getInstance().refreshAndFindFileByNioFile(source)
-    if (file == null) { updateStatus("关联的代码文件不可用，请重新导入题目", true); return }
+    if (file == null) { updateStatus("当前代码文件不可用", true); return }
     try {
       FileDocumentManager.getInstance().getDocument(file)?.let { FileDocumentManager.getInstance().saveDocument(it) }
     } catch (error: Exception) { updateStatus("保存代码文件失败：${error.message}", true); return }
