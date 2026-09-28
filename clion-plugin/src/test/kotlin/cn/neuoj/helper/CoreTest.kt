@@ -32,20 +32,28 @@ class CoreTest {
     assertThrows(IllegalArgumentException::class.java) { Protocol.validate(p.copy(samples = mutableListOf())) }
     assertThrows(IllegalArgumentException::class.java) { Protocol.validate(p.copy(id = "../escape")) }
   }
-  @Test fun workspacePreservesSourceAndCustomSamples() {
+  @Test fun workspaceBindsExistingSourceWithoutCreatingFiles() {
     val root = Files.createTempDirectory("neuoj-workspace-test")
     try {
-      val storage = Workspace(root); val p = problem()
-      val source = storage.importProblem(p)
+      val storage = Workspace(); val p = problem()
+      val source = root.resolve("existing.cpp")
       Files.writeString(source, "用户代码")
+      assertThrows(IllegalArgumentException::class.java) { storage.importProblem(p, root.resolve("missing.cpp")) }
+      storage.importProblem(p, source)
       val edited = storage.load(p.id)!!
       edited.samples.add(Sample("custom-1", "2", "2", true)); storage.save(edited)
-      storage.importProblem(p.copy(title = "新题面", samples = mutableListOf(Sample("official-1", "3", "3"))))
+      storage.importProblem(p.copy(title = "新题面", samples = mutableListOf(Sample("official-1", "3", "3"))), source)
       assertEquals("用户代码", Files.readString(source))
-      val restarted = Workspace(root)
-      assertEquals("新题面", restarted.list().single().title)
-      assertEquals(listOf("official-1", "custom-1"), restarted.load(p.id)!!.samples.map { it.id })
-      storage.delete(p.id); assertTrue(storage.list().isEmpty())
+      assertEquals(source, storage.source(p.id))
+      assertEquals("新题面", storage.list().single().title)
+      assertEquals(listOf("official-1", "custom-1"), storage.load(p.id)!!.samples.map { it.id })
+      assertTrue(Workspace().list().isEmpty())
+      assertEquals(listOf(source), Files.list(root).use { it.toList() })
+      val other = p.copy(id = "https://oj.neu.edu.cn/problems/84", url = "https://oj.neu.edu.cn/problems/84")
+      storage.importProblem(other, source)
+      assertNull(storage.load(p.id))
+      assertEquals(source, storage.source(other.id))
+      storage.delete(other.id); assertTrue(storage.list().isEmpty()); assertTrue(Files.exists(source))
     } finally { root.toFile().deleteRecursively() }
   }
   @Test fun compilerDetectionAndArguments() {
@@ -66,7 +74,7 @@ class CoreTest {
       assertThrows(IllegalArgumentException::class.java) { Compiler.validate(versioned.toString()) }
       Compiler.standards.forEach { assertEquals("-std=c++${it.removePrefix("C++")}", Compiler.standardFlag(it)) }
       val command = Compiler.command("/path with spaces/g++-16", "C++17", root.resolve("source file.cpp"), root.resolve("output file"))
-      assertEquals(6, command.size); assertEquals("-O2", command[2])
+      assertEquals(8, command.size); assertEquals("-O2", command[2])
       assertThrows(IllegalArgumentException::class.java) { Compiler.standardFlag("C++99") }
     } finally { root.toFile().deleteRecursively() }
   }
@@ -92,12 +100,15 @@ class CoreTest {
     val root = Files.createTempDirectory("neuoj real gcc")
     try {
       val p = problem()
-      Files.writeString(root.resolve("main.cpp"), "#include <iostream>\nint main(){int x;std::cin>>x;std::cout<<x<<'\\n';}\n")
-      val result = Runner().run(p, root, compiler, "C++14", AtomicBoolean())
+      val source = root.resolve("existing.cpp")
+      Files.writeString(source, "#include <fstream>\n#include <iostream>\nint main(){std::ofstream(\"runner-created.txt\") << \"temporary\";int x;std::cin>>x;std::cout<<x<<'\\n';}\n")
+      val result = Runner().run(p, source, compiler, "C++14", AtomicBoolean())
       assertEquals(result.compile.stderr, 0, result.compile.exitCode)
       assertTrue(CompareMode.EXACT.matches(result.tests.single().process.stdout, p.samples.single().output))
-      Files.writeString(root.resolve("main.cpp"), "invalid code")
-      assertTrue(Runner().run(p, root, compiler, "C++14", AtomicBoolean()).tests.isEmpty())
+      assertFalse(Files.exists(root.resolve("runner-created.txt")))
+      Files.writeString(source, "invalid code")
+      assertTrue(Runner().run(p, source, compiler, "C++14", AtomicBoolean()).tests.isEmpty())
+      assertEquals(listOf(source), Files.list(root).use { it.toList() })
     } finally { root.toFile().deleteRecursively() }
   }
 }

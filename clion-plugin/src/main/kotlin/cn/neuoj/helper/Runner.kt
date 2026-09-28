@@ -39,7 +39,7 @@ object Processes {
     val children = mutableMapOf<Long, ProcessHandle>()
     fun elapsed() = (System.nanoTime() - started) / 1_000_000
     while (true) {
-      process.descendants().use { stream -> stream.forEach { children[it.pid()] = it } }
+      runCatching { process.descendants().use { stream -> stream.forEach { children[it.pid()] = it } } }
       failure = when {
         cancelled.get() -> "已取消"
         exceeded.get() -> "输出超限"
@@ -50,7 +50,7 @@ object Processes {
     }
     if (failure == null && exceeded.get()) failure = "输出超限"
     // 子进程可能继承管道；结束时一并清理，避免孤儿进程或阻塞读取。
-    process.descendants().use { descendants -> descendants.toList().asReversed().forEach { it.destroyForcibly() } }
+    runCatching { process.descendants().use { descendants -> descendants.toList().asReversed().forEach { it.destroyForcibly() } } }
     children.values.toList().asReversed().forEach { if (it.isAlive) it.destroyForcibly() }
     if (process.isAlive) process.destroyForcibly()
     process.waitFor(2, TimeUnit.SECONDS)
@@ -77,23 +77,29 @@ object Compiler {
     val candidate = path.split(java.io.File.pathSeparator).filter { it.isNotBlank() }.map { Path.of(it).resolve("g++").toAbsolutePath() }.firstOrNull { Files.isRegularFile(it) && Files.isExecutable(it) } ?: return null
     return runCatching { validate(candidate.toString()); candidate.toString() }.getOrNull()
   }
-  fun command(path: String, standard: String, source: Path, binary: Path) = listOf(path, standardFlag(standard), "-O2", source.toString(), "-o", binary.toString())
+  fun command(path: String, standard: String, source: Path, binary: Path) = listOf(path, standardFlag(standard), "-O2", "-x", "c++", source.toString(), "-o", binary.toString())
 }
 
 data class TestResult(val sampleId: String, val process: ProcessResult)
 data class RunResult(val compile: ProcessResult, val tests: List<TestResult>)
 
 class Runner {
-  fun run(problem: Problem, directory: Path, compiler: String, standard: String, cancelled: AtomicBoolean): RunResult {
+  fun run(problem: Problem, source: Path, compiler: String, standard: String, cancelled: AtomicBoolean): RunResult {
+    require(Files.isRegularFile(source)) { "关联的代码文件不存在。" }
     Compiler.validate(compiler)
-    val binary = directory.resolve("solution")
-    val compile = Processes.execute(Compiler.command(compiler, standard, directory.resolve("main.cpp"), binary), directory, timeoutMs = 30_000, cancelled = cancelled)
-    if (compile.failure != null || compile.exitCode != 0) return RunResult(compile, emptyList())
-    val results = mutableListOf<TestResult>()
-    for (sample in problem.samples) {
-      if (cancelled.get()) break
-      results.add(TestResult(sample.id, Processes.execute(listOf(binary.toString()), directory, sample.input, problem.timeLimitMs ?: 2000, cancelled)))
+    val temp = Files.createTempDirectory("neuoj-run-")
+    try {
+      val binary = temp.resolve("solution")
+      val compile = Processes.execute(Compiler.command(compiler, standard, source, binary), temp, timeoutMs = 30_000, cancelled = cancelled)
+      if (compile.failure != null || compile.exitCode != 0) return RunResult(compile, emptyList())
+      val results = mutableListOf<TestResult>()
+      for (sample in problem.samples) {
+        if (cancelled.get()) break
+        results.add(TestResult(sample.id, Processes.execute(listOf(binary.toString()), temp, sample.input, problem.timeLimitMs ?: 2000, cancelled)))
+      }
+      return RunResult(compile, results)
+    } finally {
+      Files.walk(temp).use { paths -> paths.sorted(Comparator.reverseOrder()).forEach { Files.deleteIfExists(it) } }
     }
-    return RunResult(compile, results)
   }
 }

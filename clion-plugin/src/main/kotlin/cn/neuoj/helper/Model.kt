@@ -5,8 +5,6 @@ import com.google.gson.JsonParser
 import java.net.URI
 import java.nio.file.Files
 import java.nio.file.Path
-import java.nio.file.StandardCopyOption
-import java.security.MessageDigest
 
 data class Sample(var id: String = "", var input: String = "", var output: String = "", var custom: Boolean = false)
 data class Problem(
@@ -72,39 +70,25 @@ object Protocol {
   }
 }
 
-fun digest(value: String): String = MessageDigest.getInstance("SHA-256").digest(value.toByteArray()).joinToString("") { "%02x".format(it) }
+class Workspace {
+  private val problems = mutableMapOf<String, Problem>()
+  private val sources = mutableMapOf<String, Path>()
 
-class Workspace(private val root: Path) {
-  private val gson = Gson()
-  fun directory(id: String): Path = root.resolve(digest(id))
-  @Synchronized fun importProblem(problem: Problem): Path {
+  @Synchronized fun importProblem(problem: Problem, source: Path): Path {
     Protocol.validate(problem)
-    val dir = directory(problem.id)
-    Files.createDirectories(dir)
-    val previous = load(problem.id)
+    require(Files.isRegularFile(source)) { "请先打开并保存本地代码文件。" }
+    val path = source.toAbsolutePath().normalize()
+    val previousId = sources.entries.firstOrNull { it.value == path && it.key != problem.id }?.key
+    if (previousId != null) { sources.remove(previousId); problems.remove(previousId) }
     val merged = problem.copy(samples = problem.samples.map { it.copy() }.toMutableList())
-    previous?.samples?.filter { it.custom }?.forEach { merged.samples.add(it) }
-    val source = dir.resolve("main.cpp")
-    if (!Files.exists(source)) Files.writeString(source, "#include <bits/stdc++.h>\nusing namespace std;\n\nint main() {\n  ios::sync_with_stdio(false);\n  cin.tie(0);\n  return 0;\n}\n")
-    save(merged)
-    return source
+    problems[problem.id]?.samples?.filter { it.custom }?.forEach { merged.samples.add(it) }
+    problems[problem.id] = merged
+    sources[problem.id] = path
+    return path
   }
-  @Synchronized fun save(problem: Problem) {
-    val dir = directory(problem.id)
-    Files.createDirectories(dir)
-    val temp = Files.createTempFile(dir, "problem-", ".tmp")
-    try {
-      Files.writeString(temp, gson.toJson(problem))
-      Files.move(temp, dir.resolve("problem.json"), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
-    } finally { Files.deleteIfExists(temp) }
-  }
-  @Synchronized fun load(id: String): Problem? = runCatching { gson.fromJson(Files.readString(directory(id).resolve("problem.json")), Problem::class.java) }.getOrNull()
-  @Synchronized fun list(): List<Problem> {
-    if (!Files.exists(root)) return emptyList()
-    return Files.list(root).use { stream -> stream.map { dir -> runCatching { gson.fromJson(Files.readString(dir.resolve("problem.json")), Problem::class.java) }.getOrNull() }.filter { it != null }.toList().filterNotNull() }.sortedBy { it.title }
-  }
-  @Synchronized fun delete(id: String) {
-    val dir = directory(id)
-    if (Files.exists(dir)) Files.walk(dir).use { paths -> paths.sorted(Comparator.reverseOrder()).forEach { Files.delete(it) } }
-  }
+  @Synchronized fun save(problem: Problem) { if (sources.containsKey(problem.id)) problems[problem.id] = problem }
+  @Synchronized fun load(id: String): Problem? = problems[id]
+  @Synchronized fun source(id: String): Path? = sources[id]
+  @Synchronized fun list(): List<Problem> = problems.values.sortedBy { it.title }
+  @Synchronized fun delete(id: String) { problems.remove(id); sources.remove(id) }
 }

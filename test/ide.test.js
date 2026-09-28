@@ -38,13 +38,12 @@ test('多样例保留末尾换行并按编号配对', () => {
   doc.querySelector('#example-output-2').id = 'example-output-3';
   assert.throws(() => core.extractIdeProblem(doc, p.url), /配对/);
 });
-function bridgeSetup({ status = 200, capabilities = { protocolVersion: 1, capabilities: ['importProblem'] }, connected = true, granted = true } = {}) {
+function bridgeSetup({ status = 200, capabilities = { protocolVersion: 1, capabilities: ['importProblem'] }, connected = true } = {}) {
   const requests = [];
   const chrome = {
     runtime: { onInstalled: { addListener() {} }, onStartup: { addListener() {} }, onMessage: { addListener() {} }, onConnect: { addListener() {} } },
     action: { onClicked: { addListener() {} } },
-    storage: { local: { async get() { return { idePort: 27121 }; } } },
-    permissions: { async contains() { return granted; } }
+    storage: { local: { async get() { throw new Error('导入不应读取设置'); } } }
   };
   const context = vm.createContext({ chrome, URL, AbortController, setTimeout, clearTimeout, console, TypeError,
     fetch: async (url, options) => {
@@ -59,12 +58,13 @@ test('后台导入先验证协议且保持原有消息边界', async () => {
   const problem = core.extractIdeProblem(new JSDOM(html).window.document, 'https://oj.neu.edu.cn/problems/83');
   assert.equal((await app.context.importToIde(problem, { url: problem.url })).ok, true);
   assert.equal(app.requests.length, 2);
+  assert.equal(app.requests[0].url, 'http://127.0.0.1:27121/v1/capabilities');
   assert.equal(app.requests[0].options.headers.Authorization, undefined);
   await assert.rejects(app.context.importToIde(problem, { url: 'https://other.example/problems/83' }), /无效/);
 });
 test('后台连接和协议失败有明确反馈', async () => {
   const problem = core.extractIdeProblem(new JSDOM(html).window.document, 'https://oj.neu.edu.cn/problems/83');
-  for (const [options, pattern] of [[{ status: 403 }, /来源/], [{ status: 409 }, /接收项目/], [{ connected: false }, /无法连接/], [{ capabilities: { protocolVersion: 2 } }, /不兼容/], [{ granted: false }, /权限/]]) {
+  for (const [options, pattern] of [[{ status: 403 }, /来源/], [{ status: 409 }, /本地代码文件/], [{ connected: false }, /无法连接/], [{ capabilities: { protocolVersion: 2 } }, /不兼容/]]) {
     await assert.rejects(bridgeSetup(options).context.importToIde(problem, { url: problem.url }), pattern);
   }
 });
@@ -76,6 +76,16 @@ test('题目页仅在点击后发送导入消息，缺少样例反馈错误', as
   dom.window.eval(fs.readFileSync('extension/src/ide-content.js', 'utf8'));
   assert.equal(messages.length, 0);
   const shadow = dom.window.document.getElementById('neuoj-ide-import').shadowRoot;
+  assert.equal(shadow.querySelectorAll('button').length, 1);
+  assert.equal(shadow.querySelector('button').textContent, '导入题目');
+  assert.equal(shadow.querySelector('button').getAttribute('style'), null);
+  assert.ok(shadow.querySelector('.panel > .top > .actions > button'));
+  assert.equal(shadow.querySelector('.status').hidden, true);
+  const analysisStyle = fs.readFileSync('extension/src/content.js', 'utf8');
+  for (const rule of ['.panel { border:', '.top { display:flex;', '.actions { display:flex;', 'button { box-sizing:border-box;', 'button:hover:not(:disabled)', 'button:disabled', 'button:focus-visible']) {
+    const css = analysisStyle.slice(analysisStyle.indexOf(rule), analysisStyle.indexOf('}', analysisStyle.indexOf(rule)) + 1);
+    assert.ok(shadow.querySelector('style').textContent.includes(css));
+  }
   shadow.querySelector('button').click();
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(messages[0].type, 'IDE_IMPORT');
@@ -88,27 +98,25 @@ test('题目页仅在点击后发送导入消息，缺少样例反馈错误', as
   dom.window.dispatchEvent(new dom.window.Event('pagehide'));
   dom.window.close();
 });
-test('IDE 设置独立保存，不要求模型 API 配置', async () => {
-  const dom = new JSDOM(fs.readFileSync('extension/src/options.html', 'utf8'), { runScripts: 'outside-only' });
-  const saved = {};
-  const removed = [];
-  dom.window.chrome = {
-    storage: { local: { async get() { return { idePort: 27122 }; }, async set(value) { Object.assign(saved, value); }, async remove(key) { removed.push(key); } } },
-    permissions: { async request() { throw new Error('不应再要求手动授权'); } }
-  };
-  dom.window.eval(fs.readFileSync('extension/src/ide-options.js', 'utf8'));
+test('WebVPN 题目页点击导入时发送对应代理题目', async () => {
+  const dom = new JSDOM(html, { url: `https://webvpn.neu.edu.cn${prefix}/exam/46/problem/F`, runScripts: 'outside-only' });
+  const messages = [];
+  dom.window.NEUOJCore = core;
+  dom.window.chrome = { runtime: { sendMessage(message, callback) { messages.push(message); callback?.({ ok: true }); } } };
+  dom.window.eval(fs.readFileSync('extension/src/ide-content.js', 'utf8'));
+  dom.window.document.getElementById('neuoj-ide-import').shadowRoot.querySelector('button').click();
   await new Promise(resolve => setImmediate(resolve));
-  assert.equal(dom.window.document.getElementById('idePort').value, '27122');
-  assert.deepEqual(removed, ['ideToken']);
-  const form = dom.window.document.getElementById('ide-settings');
-  form.dispatchEvent(new dom.window.Event('submit', { cancelable: true }));
-  await new Promise(resolve => setImmediate(resolve));
-  assert.equal(dom.window.document.getElementById('ideToken'), null);
-  assert.equal(saved.idePort, 27122);
-  dom.window.document.getElementById('idePort').value = '1';
-  form.dispatchEvent(new dom.window.Event('submit', { cancelable: true }));
-  await new Promise(resolve => setImmediate(resolve));
-  assert.match(dom.window.document.getElementById('ide-message').textContent, /有效/);
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].problem.id, 'webvpn:/exam/46/problem/F');
+  dom.window.dispatchEvent(new dom.window.Event('pagehide'));
+  dom.window.close();
+});
+test('Web 设置页与 main 保持一致且无 IDE 连接设置', () => {
+  const html = fs.readFileSync('extension/src/options.html', 'utf8');
+  const dom = new JSDOM(html);
+  assert.equal(dom.window.document.getElementById('ide-settings'), null);
+  assert.equal(dom.window.document.getElementById('testConnection').textContent, '测试连接');
+  assert.deepEqual([...dom.window.document.querySelectorAll('script')].map(script => script.getAttribute('src')), ['options.js']);
   dom.window.close();
 });
 

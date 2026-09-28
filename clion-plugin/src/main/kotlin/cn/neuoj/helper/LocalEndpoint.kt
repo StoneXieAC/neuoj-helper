@@ -35,7 +35,7 @@ class LocalEndpoint(port: Int, private val importer: (Problem) -> Unit) : AutoCl
           response = mapOf("ok" to true, "id" to problem.id)
         } else { code = 404; response = mapOf("error" to "接口不存在。") }
       } catch (_: NoReceiverException) {
-        code = 409; response = mapOf("error" to "请指定接收项目。")
+        code = 409; response = mapOf("error" to "请在 CLion 中打开并选中本地代码文件。")
       } catch (_: Exception) {
         code = 400; response = mapOf("error" to "导入数据无效或工作区无法写入。")
       }

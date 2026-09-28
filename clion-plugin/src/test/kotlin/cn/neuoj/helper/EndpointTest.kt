@@ -14,9 +14,11 @@ class EndpointTest {
   @Test fun httpImportAndFailures() {
     val root = Files.createTempDirectory("neuoj-endpoint-test")
     try {
-      val workspace = Workspace(root)
+      val workspace = Workspace()
+      val source = root.resolve("current.cpp")
+      Files.writeString(source, "用户代码")
       var receiving = true
-      LocalEndpoint(0) { if (!receiving) throw NoReceiverException(); workspace.importProblem(it) }.use { endpoint ->
+      LocalEndpoint(0) { if (!receiving) throw NoReceiverException(); workspace.importProblem(it, source) }.use { endpoint ->
         endpoint.start()
         val client = HttpClient.newHttpClient()
         fun request(path: String, body: String? = null, origin: String? = null): HttpResponse<String> {
@@ -38,7 +40,8 @@ class EndpointTest {
         val body = Gson().toJson(p)
         assertEquals(400, request("problems", body.replace("\"input\":\"1\\n\"", "\"input\":42")).statusCode())
         assertEquals(200, request("problems", body).statusCode())
-        assertTrue(Files.exists(workspace.directory(p.id).resolve("main.cpp")))
+        assertEquals(source, workspace.source(p.id))
+        assertEquals(listOf(source), Files.list(root).use { it.toList() })
         receiving = false
         assertEquals(409, request("problems", body).statusCode())
         assertEquals(400, request("problems", Gson().toJson(p.copy(protocolVersion = 2))).statusCode())

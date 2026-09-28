@@ -2,14 +2,11 @@ package cn.neuoj.helper
 
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationManager
-import com.intellij.openapi.fileChooser.FileChooser
-import com.intellij.openapi.fileChooser.FileChooserDescriptorFactory
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.options.ShowSettingsUtil
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.Messages
-import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.wm.ToolWindow
 import com.intellij.openapi.wm.ToolWindowFactory
 import com.intellij.ui.content.ContentFactory
@@ -55,7 +52,7 @@ class HelperPanel(private val project: Project) : JPanel(BorderLayout(0, 6)), Di
   private val service = project.getService(ProjectWorkspace::class.java)
   private val problemBox = JComboBox<Problem>()
   private val cardsPanel = JPanel()
-  private val status = JLabel("在浏览器题目页点击“导入到 IDE”")
+  private val status = JLabel("在浏览器题目页点击“导入题目”")
   private val cards = mutableListOf<SampleCard>()
   private val results = mutableMapOf<String, ProcessResult>()
   private var mode = runCatching { CompareMode.valueOf(HelperSettings.instance().config.mode) }.getOrDefault(CompareMode.TOKENS)
@@ -69,7 +66,6 @@ class HelperPanel(private val project: Project) : JPanel(BorderLayout(0, 6)), Di
   private val changed: () -> Unit = { reload(service.lastImportedId ?: problem?.id) }
   private val runAll = icon("▶", "运行全部样例") { run(null) }
   private val stop = icon("■", "取消运行") { cancellation.set(true); status.text = "正在取消…" }
-  private val receiver = icon("◎", "接收到此项目") { selectReceiver() }
 
   init {
     border = BorderFactory.createEmptyBorder(6, 6, 6, 6)
@@ -81,7 +77,7 @@ class HelperPanel(private val project: Project) : JPanel(BorderLayout(0, 6)), Di
 
     val actions = JPanel(FlowLayout(FlowLayout.RIGHT, 2, 0))
     stop.isEnabled = false
-    actions.add(receiver); actions.add(runAll); actions.add(stop)
+    actions.add(runAll); actions.add(stop)
     val modes = ButtonGroup()
     fun modeButton(symbol: String, label: String, help: String, value: CompareMode) = JToggleButton(GlyphIcon(symbol)).apply {
       margin = java.awt.Insets(3, 7, 3, 7); isFocusable = false
@@ -93,7 +89,7 @@ class HelperPanel(private val project: Project) : JPanel(BorderLayout(0, 6)), Di
     }
     modeButton("≋", "忽略空白比较", "按非空白词逐个比较", CompareMode.TOKENS)
     modeButton("¶", "逐字比较", "只统一 CRLF 换行", CompareMode.EXACT)
-    actions.add(icon("⚙", "编译器与连接设置") { ShowSettingsUtil.getInstance().showSettingsDialog(project, HelperConfigurable::class.java) })
+    actions.add(icon("⚙", "编译器设置") { ShowSettingsUtil.getInstance().showSettingsDialog(project, HelperConfigurable::class.java) })
     val more = icon("⋯", "更多题目操作") {}
     more.addActionListener { showMenu(more) }
     actions.add(more)
@@ -116,9 +112,8 @@ class HelperPanel(private val project: Project) : JPanel(BorderLayout(0, 6)), Di
     reload(null)
     ApplicationManager.getApplication().executeOnPooledThread {
       HelperSettings.instance().initializeCompiler()
-      IdeBridge.instance().select(project)
+      IdeBridge.instance().start()
       later {
-        receiver.toolTipText = "接收项目：${project.name}"
         if (HelperSettings.instance().config.compiler.isBlank()) status.text = "请选择 GNU g++（⚙）"
       }
     }
@@ -133,13 +128,6 @@ class HelperPanel(private val project: Project) : JPanel(BorderLayout(0, 6)), Di
   private fun later(action: () -> Unit) = ApplicationManager.getApplication().invokeLater {
     if (!disposed && !project.isDisposed) action()
   }
-  private fun selectReceiver() {
-    ApplicationManager.getApplication().executeOnPooledThread {
-      IdeBridge.instance().select(project)
-      later { receiver.toolTipText = "接收项目：${project.name}"; status.text = IdeBridge.instance().status }
-    }
-  }
-
   private fun reload(id: String?) {
     generation++; cancellation.set(true); results.clear()
     reloading = true
@@ -153,9 +141,9 @@ class HelperPanel(private val project: Project) : JPanel(BorderLayout(0, 6)), Di
   private fun selectProblem(value: Problem?) {
     if (value?.id != problem?.id) { generation++; cancellation.set(true); results.clear() }
     problem = value
-    status.text = if (value == null) "在浏览器题目页点击“导入到 IDE”" else "已载入 ${value.samples.size} 组样例"
+    status.text = if (value == null) "在浏览器题目页点击“导入题目”" else "已载入 ${value.samples.size} 组样例"
     cards.clear(); cardsPanel.removeAll()
-    if (value == null) cardsPanel.add(JLabel("在浏览器题目页点击“导入到 IDE”"))
+    if (value == null) cardsPanel.add(JLabel("在浏览器题目页点击“导入题目”"))
     else value.samples.forEachIndexed { index, sample ->
       val card = SampleCard(value, sample, index + 1)
       cards.add(card); cardsPanel.add(card); cardsPanel.add(Box.createVerticalStrut(8))
@@ -306,8 +294,7 @@ class HelperPanel(private val project: Project) : JPanel(BorderLayout(0, 6)), Di
     fun item(label: String, action: () -> Unit) { menu.add(JMenuItem(label).apply { addActionListener { action() } }) }
     item("查看题面") { showStatement() }
     item("编译诊断") { showText("编译诊断", compileDiagnostic) }
-    item("打开源码") { openSource() }
-    item("另存题目") { exportProblem() }
+    item("打开关联文件") { later { openSource() } }
     menu.addSeparator()
     item("清理此题") { deleteProblem() }
     menu.show(anchor, 0, anchor.height)
@@ -326,37 +313,30 @@ class HelperPanel(private val project: Project) : JPanel(BorderLayout(0, 6)), Di
   }
   private fun openSource() {
     val p = problem ?: return
-    LocalFileSystem.getInstance().refreshAndFindFileByNioFile(service.workspace.directory(p.id).resolve("main.cpp"))?.let {
+    val path = service.workspace.source(p.id) ?: return
+    com.intellij.openapi.vfs.LocalFileSystem.getInstance().refreshAndFindFileByNioFile(path)?.let {
       FileEditorManager.getInstance(project).openFile(it, true)
     }
-  }
-  private fun exportProblem() {
-    if (running) return
-    val p = problem ?: return
-    FileDocumentManager.getInstance().saveAllDocuments()
-    val selected = FileChooser.chooseFile(FileChooserDescriptorFactory.createSingleFolderDescriptor().withTitle("选择另存目录"), project, null) ?: return
-    val destination = selected.toNioPath().resolve("neuoj-${digest(p.id).take(12)}")
-    if (Files.exists(destination)) { status.text = "目标题目目录已存在"; return }
-    try {
-      Files.createDirectories(destination)
-      val source = service.workspace.directory(p.id)
-      for (file in listOf("main.cpp", "problem.json")) Files.copy(source.resolve(file), destination.resolve(file))
-      status.text = "题目已另存"
-      status.toolTipText = destination.toString()
-    } catch (e: Exception) { status.text = "另存失败：${e.message}" }
   }
   private fun deleteProblem() {
     if (running) return
     val p = problem ?: return
-    if (Messages.showYesNoDialog(project, "将删除此题源码、样例和本地结果。请先另存需要保留的代码。", "清理题目", Messages.getWarningIcon()) != Messages.YES) return
-    val dir = service.workspace.directory(p.id)
-    LocalFileSystem.getInstance().refreshAndFindFileByNioFile(dir.resolve("main.cpp"))?.let { FileEditorManager.getInstance(project).closeFile(it) }
+    if (Messages.showYesNoDialog(project, "解除此题与代码文件的关联并清除本次会话的样例？代码文件不会删除。", "清理题目", Messages.getQuestionIcon()) != Messages.YES) return
     service.workspace.delete(p.id); results.clear(); reload(null)
   }
   private fun run(sampleId: String?) {
+    later { runInWriteIntent(sampleId) }
+  }
+  private fun runInWriteIntent(sampleId: String?) {
     if (running) return
     val p = problem ?: return
-    FileDocumentManager.getInstance().saveAllDocuments()
+    val source = service.workspace.source(p.id)
+    if (source == null || !Files.isRegularFile(source)) { status.text = "关联的代码文件不存在，请重新导入题目"; return }
+    val file = com.intellij.openapi.vfs.LocalFileSystem.getInstance().refreshAndFindFileByNioFile(source)
+    if (file == null) { status.text = "关联的代码文件不可用，请重新导入题目"; return }
+    try {
+      FileDocumentManager.getInstance().getDocument(file)?.let { FileDocumentManager.getInstance().saveDocument(it) }
+    } catch (error: Exception) { status.text = "保存代码文件失败：${error.message}"; return }
     val settings = HelperSettings.instance().config.copy()
     if (settings.compiler.isBlank()) { status.text = "请选择 GNU g++（⚙）"; return }
     val selected = p.samples.filter { sampleId == null || it.id == sampleId }
@@ -370,7 +350,7 @@ class HelperPanel(private val project: Project) : JPanel(BorderLayout(0, 6)), Di
     runAll.isEnabled = false; stop.isEnabled = true
     status.text = "正在编译并运行…"
     ApplicationManager.getApplication().executeOnPooledThread {
-      val outcome = runCatching { Runner().run(snapshot, service.workspace.directory(p.id), settings.compiler, settings.standard, taskCancel) }
+      val outcome = runCatching { Runner().run(snapshot, source, settings.compiler, settings.standard, taskCancel) }
       later {
         running = false; runAll.isEnabled = true; stop.isEnabled = false; cards.forEach { it.setRunning(false) }
         if (current != generation) { status.text = "题目已变化，旧运行已取消"; return@later }

@@ -12,7 +12,7 @@ import javax.swing.*
 @State(name = "NeuojHelperSettings", storages = [Storage("neuoj-helper.xml")])
 @Service(Service.Level.APP)
 class HelperSettings : PersistentStateComponent<HelperSettings.Values> {
-  data class Values(var compiler: String = "", var standard: String = "C++14", var detectionDone: Boolean = false, var port: Int = 27121, var mode: String = "TOKENS")
+  data class Values(var compiler: String = "", var standard: String = "C++14", var detectionDone: Boolean = false, var mode: String = "TOKENS")
   private var values = Values()
   val config: Values get() = values
   override fun getState() = values
@@ -28,24 +28,22 @@ class HelperSettings : PersistentStateComponent<HelperSettings.Values> {
 class HelperConfigurable : Configurable {
   private val compiler = TextFieldWithBrowseButton()
   private val standard = JComboBox(Compiler.standards.toTypedArray())
-  private val port = JSpinner(SpinnerNumberModel(27121, 1024, 65535, 1))
   override fun getDisplayName() = "NEUOJ Helper"
   override fun createComponent(): JComponent {
     compiler.addBrowseFolderListener(null, FileChooserDescriptorFactory.createSingleFileDescriptor().withTitle("选择 GNU g++ 可执行文件"))
     return JPanel(GridLayout(0, 1, 6, 6)).apply {
       add(JLabel("编译器路径（GNU g++）")); add(compiler)
       add(JLabel("C++ 标准")); add(standard)
-      add(JLabel("IDE 连接端口")); add(port)
       add(JLabel("未找到 GNU g++ 时请手动选择；不会回退到 Clang。"))
     }.also { reset() }
   }
   override fun isModified(): Boolean {
     val state = HelperSettings.instance().config
-    return compiler.text != state.compiler || standard.selectedItem != state.standard || port.value != state.port
+    return compiler.text != state.compiler || standard.selectedItem != state.standard
   }
   override fun reset() {
     val state = HelperSettings.instance().config
-    compiler.text = state.compiler; standard.selectedItem = state.standard; port.value = state.port
+    compiler.text = state.compiler; standard.selectedItem = state.standard
   }
   override fun apply() {
     try {
@@ -57,10 +55,8 @@ class HelperConfigurable : Configurable {
       if (!completed) throw ConfigurationException("已取消保存设置。")
       error.get()?.let { throw ConfigurationException(it.message ?: "编译器验证失败。") }
       val state = HelperSettings.instance().config
-      val oldPort = state.port
       state.compiler = compiler.text; state.standard = standard.selectedItem as String
-      state.port = port.value as Int; state.detectionDone = true
-      if (oldPort != state.port) IdeBridge.instance().restart()
+      state.detectionDone = true
     } catch (e: ConfigurationException) { throw e }
     catch (e: Exception) { throw ConfigurationException(e.message ?: "保存设置失败。") }
   }

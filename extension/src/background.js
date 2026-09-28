@@ -399,14 +399,9 @@ restrictStorage().catch(console.error);
 chrome.action.onClicked.addListener(tab => { openOptionsPopup(tab?.windowId).catch(console.error); });
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (!['OPEN_OPTIONS', 'GET_CACHED_RESULT', 'TEST_CONNECTION', 'IDE_IMPORT', 'OPEN_IDE_OPTIONS'].includes(message?.type)) return false;
+  if (!['OPEN_OPTIONS', 'GET_CACHED_RESULT', 'TEST_CONNECTION', 'IDE_IMPORT'].includes(message?.type)) return false;
   (async () => {
     if (message.type === 'IDE_IMPORT') return importToIde(message.problem, sender);
-    if (message.type === 'OPEN_IDE_OPTIONS') {
-      if (!ideSource(sender?.url)) throw new Error('只能从 NEUOJ 题目页导入。');
-      await openOptionsPopup(sender.tab?.windowId);
-      return { ok: true };
-    }
     if (message.type === 'TEST_CONNECTION') return testConnection(message, sender);
     validateSender(sender);
     if (message.type === 'OPEN_OPTIONS') {
@@ -482,18 +477,15 @@ async function importToIde(problem, sender) {
   }
   const body = JSON.stringify(problem);
   if (body.length > 2 * 1024 * 1024) throw new Error('题目数据过大。');
-  const { idePort = 27121 } = await chrome.storage.local.get(['idePort']);
-  if (!Number.isInteger(idePort) || idePort < 1024 || idePort > 65535) throw new Error('IDE 连接端口无效。');
-  if (!await chrome.permissions.contains({ origins: ['http://127.0.0.1/*'] })) throw new Error('请在连接设置中授予本机连接权限。');
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 10000);
   async function request(path, options = {}) {
-    const response = await fetch(`http://127.0.0.1:${idePort}/v1/${path}`, {
+    const response = await fetch(`http://127.0.0.1:27121/v1/${path}`, {
       ...options, headers: { 'Content-Type': 'application/json' },
       signal: controller.signal, redirect: 'error', credentials: 'omit'
     });
     if (response.status === 403) throw new Error('IDE 拒绝了当前扩展的连接来源。');
-    if (!response.ok) throw new Error(response.status === 409 ? '请在 CLion 中指定接收项目。' : `IDE 请求失败（${response.status}）。`);
+    if (!response.ok) throw new Error(response.status === 409 ? '请在 CLion 中打开并选中本地代码文件。' : `IDE 请求失败（${response.status}）。`);
     try { return await response.json(); } catch { throw new Error('IDE 返回数据无效。'); }
   }
   try {
@@ -504,7 +496,7 @@ async function importToIde(problem, sender) {
     return { ok: true };
   } catch (error) {
     if (controller.signal.aborted) throw new Error('IDE 连接超时。');
-    if (error instanceof TypeError) throw new Error('无法连接 IDE，请确认插件已启动及端口一致。');
+    if (error instanceof TypeError) throw new Error('无法连接 CLion，请确认插件已启动。');
     throw error;
   } finally { clearTimeout(timer); }
 }
