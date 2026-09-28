@@ -46,7 +46,10 @@ intellijPlatform {
     }
   }
 }
-tasks.test { systemProperty("file.encoding", "UTF-8") }
+tasks.test {
+  systemProperty("file.encoding", "UTF-8")
+  systemProperty("java.awt.headless", "true")
+}
 
 // 开发沙箱可打开一次性的验收项目，不改变正式 IDE 配置。
 tasks.runIde {

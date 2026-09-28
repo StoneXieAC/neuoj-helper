@@ -22,10 +22,14 @@ import java.awt.GridBagLayout
 import java.awt.RenderingHints
 import java.awt.BasicStroke
 import java.awt.Color
+import java.awt.Shape
+import java.awt.event.MouseWheelEvent
 import java.nio.file.Files
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
 import javax.swing.*
+import javax.swing.text.Highlighter
+import javax.swing.text.JTextComponent
 import javax.swing.event.DocumentEvent
 import javax.swing.event.DocumentListener
 
@@ -127,6 +131,73 @@ private class CardsPanel : JPanel(), Scrollable {
   override fun getScrollableTracksViewportHeight() = false
 }
 
+internal class CardRow(private val card: JComponent) : JPanel(null) {
+  init { alignmentX = LEFT_ALIGNMENT; isOpaque = false; add(card) }
+  override fun getPreferredSize() = Dimension(840, card.preferredSize.height)
+  override fun getMaximumSize() = Dimension(Int.MAX_VALUE, preferredSize.height)
+  override fun doLayout() {
+    val margin = if (width >= 600) 24 else 8
+    val cardWidth = minOf(840, (width - margin * 2).coerceAtLeast(0))
+    card.setBounds((width - cardWidth) / 2, 0, cardWidth, card.preferredSize.height)
+  }
+}
+
+internal class ForwardingScrollPane(view: JComponent, private val outer: () -> JScrollPane?) : JScrollPane(view) {
+  override fun processMouseWheelEvent(event: MouseWheelEvent) {
+    val bar = verticalScrollBar
+    val direction = event.preciseWheelRotation
+    val atEdge = bar.maximum <= bar.visibleAmount ||
+      (direction < 0 && bar.value <= bar.minimum) ||
+      (direction > 0 && bar.value >= bar.maximum - bar.visibleAmount)
+    if (atEdge) {
+      val parent = outer()
+      if (parent != null) {
+        val outerBar = parent.verticalScrollBar
+        val movement = (direction * event.scrollAmount * outerBar.unitIncrement).toInt().let {
+          if (it == 0 && direction != 0.0) if (direction > 0) 1 else -1 else it
+        }
+        outerBar.value = (outerBar.value + movement).coerceIn(outerBar.minimum, outerBar.maximum - outerBar.visibleAmount)
+        event.consume()
+        return
+      }
+    }
+    super.processMouseWheelEvent(event)
+  }
+}
+
+private class LineMarkerGutter(private val area: JTextArea) : JComponent() {
+  private var marks = emptyList<Boolean>()
+  fun setMarks(value: List<Boolean>) { marks = value; revalidate(); repaint() }
+  override fun getPreferredSize() = Dimension(8, maxOf(area.preferredSize.height, marks.size * area.getFontMetrics(area.font).height))
+  override fun paintComponent(graphics: Graphics) {
+    val lineHeight = area.getFontMetrics(area.font).height
+    if (lineHeight <= 0) return
+    val first = (graphics.clipBounds.y / lineHeight).coerceAtLeast(0)
+    val last = ((graphics.clipBounds.y + graphics.clipBounds.height) / lineHeight).coerceAtMost(marks.lastIndex)
+    for (index in first..last) {
+      graphics.color = if (marks[index]) Color(74, 150, 78) else Color(205, 83, 75)
+      graphics.fillRoundRect(2, index * lineHeight + 2, 4, (lineHeight - 4).coerceAtLeast(2), 3, 3)
+    }
+  }
+}
+
+private class LineTintPainter(private val marks: List<Boolean>) : Highlighter.HighlightPainter {
+  override fun paint(graphics: Graphics, start: Int, end: Int, bounds: Shape, component: JTextComponent) {
+    val area = component as? JTextArea ?: return
+    val lineHeight = area.getFontMetrics(area.font).height
+    if (lineHeight <= 0 || marks.isEmpty()) return
+    val clip = graphics.clipBounds
+    val first = (clip.y / lineHeight).coerceAtLeast(0)
+    val last = ((clip.y + clip.height) / lineHeight).coerceAtMost(marks.lastIndex)
+    for (index in first..last) {
+      if (index >= area.lineCount) break
+      val line = area.modelToView2D(area.getLineStartOffset(index)) ?: continue
+      graphics.color = if (marks[index]) Color(74, 150, 78, 32) else Color(205, 83, 75, 48)
+      graphics.fillRect(0, line.y.toInt(), area.width, line.height.toInt().coerceAtLeast(lineHeight))
+    }
+  }
+}
+
 class NeuojToolWindowFactory : ToolWindowFactory {
   override fun createToolWindowContent(project: Project, toolWindow: ToolWindow) {
     val panel = HelperPanel(project)
@@ -140,6 +211,7 @@ class HelperPanel(private val project: Project) : JPanel(BorderLayout(0, 6)), Di
   private val service = project.getService(ProjectWorkspace::class.java)
   private val problemTitle = JLabel("无题目")
   private val cardsPanel = CardsPanel()
+  private lateinit var cardsScroll: JScrollPane
   private val cards = mutableListOf<SampleCard>()
   private val runState = SampleRunState()
   private val expanded = mutableMapOf<String, Boolean>()
@@ -198,6 +270,7 @@ class HelperPanel(private val project: Project) : JPanel(BorderLayout(0, 6)), Di
       verticalScrollBarPolicy = ScrollPaneConstants.VERTICAL_SCROLLBAR_ALWAYS
       verticalScrollBar.unitIncrement = 18
     }
+    cardsScroll = scroll
     actions.border = BorderFactory.createEmptyBorder(0, 0, 0, scroll.verticalScrollBar.preferredSize.width)
     add(scroll, BorderLayout.CENTER)
     service.listeners.add(changed)
@@ -240,7 +313,7 @@ class HelperPanel(private val project: Project) : JPanel(BorderLayout(0, 6)), Di
     if (value == null) cardsPanel.add(JLabel("在浏览器题目页点击“导入题目”"))
     else value.samples.forEachIndexed { index, sample ->
       val card = SampleCard(value, sample, index + 1)
-      cards.add(card); cardsPanel.add(card); cardsPanel.add(Box.createVerticalStrut(8))
+      cards.add(card); cardsPanel.add(CardRow(card)); cardsPanel.add(Box.createVerticalStrut(8))
     }
     if (value != null) cardsPanel.add(JPanel(BorderLayout()).apply {
       alignmentX = LEFT_ALIGNMENT
@@ -262,15 +335,24 @@ class HelperPanel(private val project: Project) : JPanel(BorderLayout(0, 6)), Di
     val input = JTextArea(sample.input, 5, 20)
     private val expected = JTextArea(sample.output, 5, 20)
     private val actual = JTextArea(4, 20)
+    private val stderr = JTextArea(3, 20)
+    private val compileDiagnostic = JTextArea(4, 20)
     private val resultLabel = JLabel("未运行")
-    private val resultPanel = JPanel(BorderLayout(0, 3)).apply { alignmentX = LEFT_ALIGNMENT }
+    private val resultPanel = JPanel().apply { layout = BoxLayout(this, BoxLayout.Y_AXIS); alignmentX = LEFT_ALIGNMENT }
     private val fields = JPanel().apply { layout = BoxLayout(this, BoxLayout.Y_AXIS) }
+    private val gutters = mutableMapOf<JTextArea, LineMarkerGutter>()
+    private val actualField = field("实际输出", actual)
+    private val stderrField = field("标准错误", stderr)
+    private val diagnosticField = field("编译诊断", compileDiagnostic)
+    private val missingExpected = JLabel().apply { foreground = Color(205, 83, 75); isVisible = false }
+    private val missingActual = JLabel().apply { foreground = Color(205, 83, 75); isVisible = false }
+    private val runInfo = JLabel().apply { border = BorderFactory.createEmptyBorder(3, 2, 2, 0) }
     private val expander = FeedbackToggle(ExpanderIcon())
     init {
       alignmentX = LEFT_ALIGNMENT
       maximumSize = Dimension(Int.MAX_VALUE, Int.MAX_VALUE)
       border = BorderFactory.createCompoundBorder(
-        BorderFactory.createLineBorder(UIManager.getColor("Component.borderColor") ?: java.awt.Color.GRAY),
+        BorderFactory.createLineBorder(UIManager.getColor("Component.borderColor") ?: java.awt.Color.GRAY, 2),
         BorderFactory.createEmptyBorder(8, 8, 8, 8)
       )
       val title = JPanel(BorderLayout(8, 0)).apply { preferredSize = Dimension(0, 30) }
@@ -301,9 +383,12 @@ class HelperPanel(private val project: Project) : JPanel(BorderLayout(0, 6)), Di
       }, BorderLayout.EAST)
       add(title, BorderLayout.NORTH)
       fields.add(field("输入", input)); fields.add(Box.createVerticalStrut(6))
-      fields.add(field("预期输出", expected)); fields.add(Box.createVerticalStrut(6))
-      actual.isEditable = false
-      resultPanel.add(field("实际输出", actual), BorderLayout.CENTER)
+      fields.add(field("预期输出", expected)); fields.add(missingExpected); fields.add(Box.createVerticalStrut(6))
+      resultPanel.add(actualField)
+      resultPanel.add(missingActual)
+      resultPanel.add(runInfo)
+      resultPanel.add(stderrField)
+      resultPanel.add(diagnosticField)
       resultPanel.isVisible = false
       fields.add(resultPanel)
       fields.isVisible = expander.isSelected
@@ -315,15 +400,31 @@ class HelperPanel(private val project: Project) : JPanel(BorderLayout(0, 6)), Di
       fitHeight()
     }
     private fun field(label: String, area: JTextArea): JComponent {
-      area.isEditable = (sample.custom || (number == 1 && area === input)) && area !== actual
+      area.isEditable = (area === expected && sample.custom) || (area === input && (sample.custom || number == 1))
       area.font = Font(Font.MONOSPACED, Font.PLAIN, 12)
       area.accessibleContext.accessibleName = "TC $number $label"
+      val gutter = if (area === expected || area === actual) LineMarkerGutter(area).also { gutters[area] = it } else null
       return JPanel(BorderLayout(0, 2)).apply {
         alignmentX = LEFT_ALIGNMENT
         maximumSize = Dimension(Int.MAX_VALUE, Int.MAX_VALUE)
         add(JLabel(label), BorderLayout.NORTH)
-        add(JScrollPane(area).apply { preferredSize = Dimension(160, if (area === actual) 80 else 96) }, BorderLayout.CENTER)
+        add(ForwardingScrollPane(area) { cardsScroll }.apply {
+          preferredSize = Dimension(160, if (area === actual) 80 else 96)
+          border = BorderFactory.createLineBorder(UIManager.getColor("Component.borderColor") ?: Color.GRAY, 2)
+          if (gutter != null) setRowHeaderView(gutter)
+        }, BorderLayout.CENTER)
       }
+    }
+    private fun markLines(area: JTextArea, marks: List<Boolean>) {
+      area.highlighter.removeAllHighlights()
+      gutters[area]?.setMarks(marks)
+      if (marks.isNotEmpty() && area.document.length > 0)
+        area.highlighter.addHighlight(0, area.document.length, LineTintPainter(marks))
+    }
+    private fun missingText(lines: List<Int>): String {
+      if (lines.isEmpty()) return ""
+      val shown = lines.take(6).joinToString("、")
+      return "缺失第 $shown${if (lines.size > 6) " 等 ${lines.size} " else " "}行"
     }
     private fun observe(area: JTextArea, change: () -> Unit) {
       area.document.addDocumentListener(object : DocumentListener {
@@ -360,21 +461,35 @@ class HelperPanel(private val project: Project) : JPanel(BorderLayout(0, 6)), Di
       val diagnostic = runState.diagnostic(sample.id) ?: "编译错误"
       resultLabel.toolTipText = if (phase == SamplePhase.COMPILE_ERROR) diagnostic else outcome
       if (phase == SamplePhase.COMPILE_ERROR) {
-        actual.text = diagnostic
+        actualField.isVisible = false; stderrField.isVisible = false; runInfo.isVisible = false
+        missingExpected.isVisible = false; missingActual.isVisible = false
+        markLines(expected, emptyList()); markLines(actual, emptyList())
+        compileDiagnostic.text = diagnostic
+        diagnosticField.isVisible = true
         resultPanel.isVisible = true
         fitHeight()
         return
       }
       if (result == null) {
+        missingExpected.isVisible = false; missingActual.isVisible = false
+        markLines(expected, emptyList()); markLines(actual, emptyList())
         resultPanel.isVisible = false
         fitHeight()
         return
       }
-      actual.text = buildString {
-        append(result.stdout)
-        if (result.stderr.isNotBlank()) append("\n标准错误：\n").append(result.stderr)
-        append("\n\n").append(result.elapsedMs).append(" ms · 退出码 ").append(result.exitCode)
-      }
+      actual.text = result.stdout
+      stderr.text = result.stderr
+      compileDiagnostic.text = ""
+      actualField.isVisible = true; diagnosticField.isVisible = false
+      stderrField.isVisible = result.stderr.isNotBlank()
+      runInfo.text = "运行耗时 ${if (result.elapsedMs == 0L) "<1" else result.elapsedMs.toString()} ms · 退出码 ${result.exitCode}"
+      runInfo.isVisible = true
+      val comparison = OutputComparison.compare(sample.output, result.stdout, mode)
+      markLines(expected, comparison.expected); markLines(actual, comparison.actual)
+      missingExpected.text = missingText(comparison.missingExpected)
+      missingActual.text = missingText(comparison.missingActual)
+      missingExpected.isVisible = comparison.missingExpected.isNotEmpty()
+      missingActual.isVisible = comparison.missingActual.isNotEmpty()
       resultPanel.isVisible = true
       fitHeight()
     }
@@ -464,6 +579,7 @@ class HelperPanel(private val project: Project) : JPanel(BorderLayout(0, 6)), Di
     updateStatus("正在编译并运行…")
     ApplicationManager.getApplication().executeOnPooledThread {
       val outcome = runCatching { Runner().run(snapshot, source, settings.compiler, settings.standard, settings.optimize, taskCancel,
+        extraArguments = settings.extraArguments,
         onRunning = { id -> later {
           if (current == generation) { runState.running(id); refreshResults(); updateStatus("正在运行样例…") }
         } },

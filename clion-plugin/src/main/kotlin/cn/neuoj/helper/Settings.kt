@@ -19,7 +19,8 @@ import javax.swing.event.DocumentListener
 @State(name = "NeuojHelperSettings", storages = [Storage("neuoj-helper.xml")])
 @Service(Service.Level.APP)
 class HelperSettings : PersistentStateComponent<HelperSettings.Values> {
-  data class Values(var compiler: String = "", var standard: String = "C++14", var optimize: Boolean = true, var mode: String = "TOKENS")
+  data class Values(var compiler: String = "", var standard: String = "C++14", var optimize: Boolean = true,
+    var mode: String = "TOKENS", var extraArguments: String = "")
   private var values = Values()
   val config: Values get() = values
   override fun getState() = values
@@ -33,8 +34,8 @@ class HelperSettings : PersistentStateComponent<HelperSettings.Values> {
       return values.compiler
     }
   }
-  @Synchronized fun saveCompiler(compiler: String, standard: String, optimize: Boolean) {
-    values.compiler = compiler; values.standard = standard; values.optimize = optimize
+  @Synchronized fun saveCompiler(compiler: String, standard: String, optimize: Boolean, extraArguments: String = "") {
+    values.compiler = compiler; values.standard = standard; values.optimize = optimize; values.extraArguments = extraArguments
   }
   companion object { fun instance(): HelperSettings = ApplicationManager.getApplication().getService(HelperSettings::class.java) }
 }
@@ -43,6 +44,7 @@ class HelperConfigurable : Configurable {
   private val compiler = TextFieldWithBrowseButton()
   private val standard = ComboBox(Compiler.standards.toTypedArray())
   private val optimize = JBCheckBox("启用 -O2 优化")
+  private val extraArguments = JTextField()
   private var compilerRevision = 0
   private var content: JComponent? = null
   private var browseAdded = false
@@ -61,10 +63,14 @@ class HelperConfigurable : Configurable {
       browseAdded = true
     }
     compiler.preferredSize = Dimension(JBUI.scale(360), compiler.preferredSize.height)
+    extraArguments.preferredSize = Dimension(JBUI.scale(360), extraArguments.preferredSize.height)
     val form = panel {
       row("编译器路径:") { cell(compiler).align(AlignX.LEFT).comment("推荐使用 GNU GCC/G++") }
       row("C++ 标准:") { cell(standard).align(AlignX.LEFT) }
       row { cell(optimize) }
+      row("自定义编译参数:") {
+        cell(extraArguments).align(AlignX.LEFT).comment("追加到默认编译命令；支持引号和反斜杠转义")
+      }
     }
     content = form
     reset()
@@ -82,16 +88,19 @@ class HelperConfigurable : Configurable {
   }
   override fun isModified(): Boolean {
     val state = HelperSettings.instance().config
-    return compiler.text != state.compiler || standard.selectedItem != state.standard || optimize.isSelected != state.optimize
+    return compiler.text != state.compiler || standard.selectedItem != state.standard ||
+      optimize.isSelected != state.optimize || extraArguments.text != state.extraArguments
   }
   override fun reset() {
     val state = HelperSettings.instance().config
     compiler.text = state.compiler; standard.selectedItem = state.standard; optimize.isSelected = state.optimize
+    extraArguments.text = state.extraArguments
     if (content != null) detectCompiler()
   }
   override fun disposeUIResources() { content = null; compilerRevision++ }
   override fun apply() {
     try {
+      Compiler.extraArguments(extraArguments.text)
       // 设置验证由同步后台任务执行，避免在事件线程启动编译器。
       val error = java.util.concurrent.atomic.AtomicReference<Throwable?>()
       val completed = com.intellij.openapi.progress.ProgressManager.getInstance().runProcessWithProgressSynchronously(Runnable {
@@ -99,7 +108,8 @@ class HelperConfigurable : Configurable {
       }, "验证 C++ 编译器", true, null)
       if (!completed) throw ConfigurationException("已取消保存设置。")
       error.get()?.let { throw ConfigurationException(it.message ?: "编译器验证失败。") }
-      HelperSettings.instance().saveCompiler(compiler.text, standard.selectedItem as String, optimize.isSelected)
+      HelperSettings.instance().saveCompiler(compiler.text, standard.selectedItem as String,
+        optimize.isSelected, extraArguments.text)
     } catch (e: ConfigurationException) { throw e }
     catch (e: Exception) { throw ConfigurationException(e.message ?: "保存设置失败。") }
   }

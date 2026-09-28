@@ -1,0 +1,32 @@
+name: CLion 插件跨平台测试
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'clion-plugin/**'
+      - '.github/workflows/clion-plugin-test.yml'
+  pull_request:
+    paths:
+      - 'clion-plugin/**'
+      - '.github/workflows/clion-plugin-test.yml'
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: gradle/actions/setup-gradle@v4
+      - name: 测试并构建插件
+        shell: bash
+        working-directory: clion-plugin
+        run: ./gradlew test buildPlugin

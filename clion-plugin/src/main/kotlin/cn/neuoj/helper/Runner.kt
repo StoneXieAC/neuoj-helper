@@ -13,8 +13,8 @@ data class ProcessResult(val stdout: String, val stderr: String, val exitCode: I
 object Processes {
   fun execute(args: List<String>, cwd: Path, input: String = "", timeoutMs: Long, cancelled: AtomicBoolean, maxBytes: Long = 1_048_576): ProcessResult {
     if (cancelled.get()) return ProcessResult("", "", -1, 0, "已取消")
-    val started = System.nanoTime()
     val process = ProcessBuilder(args).directory(cwd.toFile()).start()
+    val started = System.nanoTime()
     val size = AtomicLong()
     val exceeded = AtomicBoolean()
     val out = ByteArrayOutputStream()
@@ -36,18 +36,36 @@ object Processes {
     val stderr = reader(process.errorStream, err)
     val writer = thread(isDaemon = true) { runCatching { process.outputStream.use { it.write(input.toByteArray(Charsets.UTF_8)) } } }
     var failure: String? = null
+    var finishedAt: Long? = null
     val children = mutableMapOf<Long, ProcessHandle>()
-    fun elapsed() = (System.nanoTime() - started) / 1_000_000
+    fun timedOut(at: Long) = at - started >= TimeUnit.MILLISECONDS.toNanos(timeoutMs)
     while (true) {
+      if (process.waitFor(10, TimeUnit.MILLISECONDS)) {
+        val observedAt = System.nanoTime()
+        finishedAt = observedAt
+        if (timedOut(observedAt)) failure = "超时"
+        break
+      }
       runCatching { process.descendants().use { stream -> stream.forEach { children[it.pid()] = it } } }
+      if (process.waitFor(0, TimeUnit.MILLISECONDS)) {
+        val observedAt = System.nanoTime()
+        finishedAt = observedAt
+        if (timedOut(observedAt)) failure = "超时"
+        break
+      }
+      val checkedAt = System.nanoTime()
       failure = when {
         cancelled.get() -> "已取消"
         exceeded.get() -> "输出超限"
-        elapsed() >= timeoutMs -> "超时"
+        timedOut(checkedAt) -> "超时"
         else -> null
       }
-      if (failure != null || process.waitFor(10, TimeUnit.MILLISECONDS)) break
+      if (failure != null) {
+        finishedAt = System.nanoTime()
+        break
+      }
     }
+    val endedAt = checkNotNull(finishedAt)
     if (failure == null && exceeded.get()) failure = "输出超限"
     // 子进程可能继承管道；结束时一并清理，避免孤儿进程或阻塞读取。
     runCatching { process.descendants().use { descendants -> descendants.toList().asReversed().forEach { it.destroyForcibly() } } }
@@ -57,12 +75,44 @@ object Processes {
     writer.join(1000); stdout.join(1000); stderr.join(1000)
     process.inputStream.close(); process.errorStream.close()
     if (exceeded.get() && failure == null) failure = "输出超限"
-    return ProcessResult(out.toString(Charsets.UTF_8), err.toString(Charsets.UTF_8), if (process.isAlive) -1 else process.exitValue(), elapsed(), failure)
+    return ProcessResult(out.toString(Charsets.UTF_8), err.toString(Charsets.UTF_8), if (process.isAlive) -1 else process.exitValue(),
+      (endedAt - started) / 1_000_000, failure)
   }
 }
 
 object Compiler {
   val standards = listOf("C++98", "C++11", "C++14", "C++17", "C++20", "C++23", "C++26")
+  fun extraArguments(value: String): List<String> {
+    require('\n' !in value && '\r' !in value) { "编译参数只能填写一行。" }
+    val result = mutableListOf<String>()
+    val current = StringBuilder()
+    var quote: Char? = null
+    var started = false
+    var index = 0
+    while (index < value.length) {
+      val char = value[index]
+      when {
+        char == '\\' && quote != '\'' && index + 1 < value.length &&
+          (value[index + 1].isWhitespace() || value[index + 1] == '"' ||
+            value[index + 1] == '\'' || value[index + 1] == '\\') -> {
+          current.append(value[index + 1]); started = true; index++
+        }
+        char == '\'' || char == '"' -> {
+          if (quote == null) { quote = char; started = true }
+          else if (quote == char) quote = null
+          else current.append(char)
+        }
+        char.isWhitespace() && quote == null -> {
+          if (started) { result.add(current.toString()); current.clear(); started = false }
+        }
+        else -> { current.append(char); started = true }
+      }
+      index++
+    }
+    require(quote == null) { "编译参数中的引号未闭合。" }
+    if (started) result.add(current.toString())
+    return result
+  }
   fun standardFlag(standard: String): String {
     require(standard in standards) { "C++ 标准无效。" }
     return "-std=c++${standard.removePrefix("C++")}"
@@ -93,9 +143,9 @@ object Compiler {
     }
     return null
   }
-  fun command(path: String, standard: String, optimize: Boolean, source: Path, binary: Path) =
+  fun command(path: String, standard: String, optimize: Boolean, source: Path, binary: Path, extra: String = "") =
     listOf(path, standardFlag(standard)) + (if (optimize) listOf("-O2") else emptyList()) +
-      listOf("-x", "c++", source.toString(), "-o", binary.toString())
+      listOf("-x", "c++", source.toString(), "-o", binary.toString()) + extraArguments(extra)
 }
 
 data class TestResult(val sampleId: String, val process: ProcessResult)
@@ -103,13 +153,14 @@ data class RunResult(val compile: ProcessResult, val tests: List<TestResult>)
 
 class Runner {
   fun run(problem: Problem, source: Path, compiler: String, standard: String, optimize: Boolean, cancelled: AtomicBoolean,
+    extraArguments: String = "",
     onRunning: (String) -> Unit = {}, onCompleted: (TestResult) -> Unit = {}): RunResult {
     require(Files.isRegularFile(source)) { "关联的代码文件不存在。" }
     Compiler.validate(compiler)
     val temp = Files.createTempDirectory("neuoj-run-")
     try {
-      val binary = temp.resolve("solution")
-      val compile = Processes.execute(Compiler.command(compiler, standard, optimize, source, binary), temp, timeoutMs = 30_000, cancelled = cancelled)
+      val binary = temp.resolve(if (System.getProperty("os.name").startsWith("Windows", ignoreCase = true)) "solution.exe" else "solution")
+      val compile = Processes.execute(Compiler.command(compiler, standard, optimize, source, binary, extraArguments), temp, timeoutMs = 30_000, cancelled = cancelled)
       if (compile.failure != null || compile.exitCode != 0) return RunResult(compile, emptyList())
       val results = mutableListOf<TestResult>()
       for (sample in problem.samples) {

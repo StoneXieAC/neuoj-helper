@@ -1,13 +1,41 @@
 package cn.neuoj.helper
 
 import org.junit.Assert.*
+import org.junit.Assume.assumeFalse
 import org.junit.Test
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.concurrent.atomic.AtomicBoolean
+import java.awt.Dimension
+import java.awt.event.MouseEvent
+import java.awt.event.MouseWheelEvent
+import javax.swing.JPanel
+import javax.swing.JScrollPane
+import javax.swing.JTextArea
 
 class CoreTest {
   private fun problem() = Problem(id = "https://oj.neu.edu.cn/problems/83", url = "https://oj.neu.edu.cn/problems/83", title = "测试题目", statement = "题面", samples = mutableListOf(Sample("official-1", "1\n", "1\n")))
+  private fun processProbe(root: Path): List<String> {
+    val binary = if (System.getProperty("os.name").startsWith("Windows")) ".exe" else ""
+    val javaHome = Path.of(System.getProperty("java.home"), "bin")
+    val source = root.resolve("ProcessProbe.java")
+    Files.writeString(source, """
+      public class ProcessProbe {
+        public static void main(String[] args) throws Exception {
+          switch (args[0]) {
+            case "echo" -> System.in.transferTo(System.out);
+            case "fail" -> { System.err.println("diagnostic"); System.exit(7); }
+            case "sleep" -> Thread.sleep(Long.parseLong(args[1]));
+            case "spam" -> { byte[] bytes = new byte[8192]; java.util.Arrays.fill(bytes, (byte) 'x');
+              for (int i = 0; i < 1000; i++) System.out.write(bytes); }
+          }
+        }
+      }
+    """.trimIndent())
+    val compiler = ProcessBuilder(javaHome.resolve("javac$binary").toString(), source.toString()).start()
+    assertEquals(String(compiler.errorStream.readAllBytes()), 0, compiler.waitFor())
+    return listOf(javaHome.resolve("java$binary").toString(), "-cp", root.toString(), "ProcessProbe")
+  }
   @Test fun comparison() {
     assertTrue(CompareMode.TOKENS.matches(" 1\t23\n", "1 23"))
     assertFalse(CompareMode.TOKENS.matches("1 23", "12 3"))
@@ -19,6 +47,60 @@ class CoreTest {
     val output = "1  23\n"
     assertTrue(CompareMode.TOKENS.matches(output, "1 23\n"))
     assertFalse(CompareMode.EXACT.matches(output, "1 23\n"))
+  }
+  @Test fun lineComparisonFollowsSelectedMode() {
+    val exact = OutputComparison.compare("alpha\nbeta\ngamma", "alpha\nwrong\ngamma", CompareMode.EXACT)
+    assertEquals(listOf(true, false, true), exact.expected)
+    assertEquals(listOf(true, false, true), exact.actual)
+    val missing = OutputComparison.compare("alpha\nbeta\ngamma", "alpha\ngamma", CompareMode.EXACT)
+    assertEquals(listOf(true, false, true), missing.expected)
+    assertEquals(listOf(true, true), missing.actual)
+    assertEquals(listOf(2), missing.missingActual)
+    assertEquals(emptyList<Int>(), missing.missingExpected)
+    val extra = OutputComparison.compare("alpha\ngamma", "alpha\nbeta\ngamma", CompareMode.EXACT)
+    assertEquals(listOf(2), extra.missingExpected)
+    assertEquals(listOf(true, false, true), extra.actual)
+    val whitespace = OutputComparison.compare("a b\n", "a\n\nb", CompareMode.TOKENS)
+    assertTrue(CompareMode.TOKENS.matches("a\n\nb", "a b\n"))
+    assertTrue(whitespace.expected.all { it } && whitespace.actual.all { it })
+    val missingTokenLine = OutputComparison.compare("a\nb\nc", "a\nc", CompareMode.TOKENS)
+    assertEquals(listOf(2), missingTokenLine.missingActual)
+    assertEquals(listOf(true, true), missingTokenLine.actual)
+    assertEquals(listOf(2), OutputComparison.compare("a\nc", "a\nb\nc", CompareMode.TOKENS).missingExpected)
+    val extraToken = OutputComparison.compare("a b", "a x b", CompareMode.TOKENS)
+    assertEquals(emptyList<Int>(), extraToken.missingExpected)
+    assertEquals(listOf(false), extraToken.expected)
+    assertEquals(listOf(false), extraToken.actual)
+    val deletedToken = OutputComparison.compare("a x b", "a b", CompareMode.TOKENS)
+    assertEquals(emptyList<Int>(), deletedToken.missingActual)
+    assertEquals(listOf(false), deletedToken.expected)
+    assertEquals(listOf(false), deletedToken.actual)
+    assertEquals(listOf(false, true), OutputComparison.compare("a x\nb", "a\nb", CompareMode.TOKENS).actual)
+    assertEquals(listOf(true, false), OutputComparison.compare("a\nx b", "a\nb", CompareMode.TOKENS).actual)
+    assertEquals(listOf(false, true), OutputComparison.compare("a\nb", "x\nb", CompareMode.TOKENS).actual)
+    assertEquals(listOf(true), OutputComparison.compare("", "", CompareMode.EXACT).actual)
+    assertEquals(listOf(false), OutputComparison.compare("", "x", CompareMode.EXACT).actual)
+    assertTrue(OutputComparison.compare("a\r\nb", "a\nb", CompareMode.EXACT).actual.all { it })
+    assertEquals(listOf(false, true), OutputComparison.compare("a \nb", "a\nb", CompareMode.EXACT).expected)
+  }
+  @Test fun cardMarginsRemainScrollable() {
+    val card = JPanel()
+    val row = CardRow(card)
+    row.setSize(1000, 100); row.doLayout()
+    assertEquals(840, card.width); assertEquals(80, card.x)
+    row.setSize(700, 100); row.doLayout()
+    assertEquals(652, card.width); assertEquals(24, card.x)
+    row.setSize(400, 100); row.doLayout()
+    assertEquals(384, card.width); assertEquals(8, card.x)
+  }
+  @Test fun wheelOnNonScrollableFieldMovesOuterCards() {
+    val longPanel = JPanel().apply { preferredSize = Dimension(100, 1000) }
+    val outer = JScrollPane(longPanel).apply { setSize(100, 100); doLayout(); verticalScrollBar.unitIncrement = 18 }
+    val inner = ForwardingScrollPane(JTextArea("短文本")) { outer }.apply { setSize(100, 80); doLayout() }
+    val event = MouseWheelEvent(inner, MouseEvent.MOUSE_WHEEL, System.currentTimeMillis(), 0,
+      10, 10, 0, false, MouseWheelEvent.WHEEL_UNIT_SCROLL, 3, 1)
+    inner.dispatchEvent(event)
+    assertTrue(outer.verticalScrollBar.value > 0)
   }
   @Test fun protocol() {
     val p = problem(); Protocol.validate(p)
@@ -110,6 +192,7 @@ class CoreTest {
     } finally { root.toFile().deleteRecursively() }
   }
   @Test fun compilerDetectionAndArguments() {
+    assumeFalse(System.getProperty("os.name").startsWith("Windows"))
     val root = Files.createTempDirectory("neuoj compiler test")
     try {
       assertNull(Compiler.detect(root.toString()))
@@ -155,6 +238,8 @@ class CoreTest {
       settings.saveCompiler(gcc.toString(), "C++17", false)
       assertEquals(gcc.toString(), settings.initializeCompiler(other.toString()))
       assertFalse(settings.config.optimize)
+      settings.saveCompiler(gcc.toString(), "C++17", false, "-DNAME='hello world' -lm")
+      assertEquals("-DNAME='hello world' -lm", settings.config.extraArguments)
       Files.delete(gxx)
       assertThrows(IllegalArgumentException::class.java) { Compiler.validate(gxx.toString()) }
       Compiler.standards.forEach { assertEquals("-std=c++${it.removePrefix("C++")}", Compiler.standardFlag(it)) }
@@ -162,22 +247,45 @@ class CoreTest {
       assertEquals(8, command.size); assertEquals("-O2", command[2])
       val withoutOptimization = Compiler.command("/path with spaces/g++", "C++17", false, root.resolve("source file.cpp"), root.resolve("output file"))
       assertEquals(7, withoutOptimization.size); assertFalse(withoutOptimization.contains("-O2"))
+      assertEquals(listOf("-DNAME=hello world", "-lm"), Compiler.extraArguments("-DNAME='hello world' -lm"))
+      assertEquals(listOf("-DNAME=hello world", "-L/path with spaces", ""),
+        Compiler.extraArguments("-DNAME=hello\\ world -L\"/path with spaces\" ''"))
+      assertEquals(listOf("-DNAME=hello world", "-lm"),
+        Compiler.command(gcc.toString(), "C++17", false, source = root.resolve("file.cpp"), binary = root.resolve("file"),
+          extra = "-DNAME='hello world' -lm").takeLast(2))
+      assertThrows(IllegalArgumentException::class.java) { Compiler.extraArguments("-DNAME='unfinished") }
+      assertThrows(IllegalArgumentException::class.java) { Compiler.extraArguments("-DNAME=one\n-lm") }
       assertThrows(IllegalArgumentException::class.java) { Compiler.standardFlag("C++99") }
     } finally { root.toFile().deleteRecursively() }
+  }
+  @Test fun compilerArgumentsArePortable() {
+    val source = Path.of("source file.cpp")
+    val binary = Path.of("output file")
+    assertEquals(listOf("-DNAME=hello world", "-L/path with spaces", ""),
+      Compiler.extraArguments("-DNAME=hello\\ world -L\"/path with spaces\" ''"))
+    assertEquals(listOf("-DQUOTE='single'"), Compiler.extraArguments("-DQUOTE=\\'single\\'"))
+    assertEquals(listOf("-DNAME=hello world", "-lm"),
+      Compiler.command("compiler", "C++17", false, source, binary, "-DNAME='hello world' -lm").takeLast(2))
+    assertThrows(IllegalArgumentException::class.java) { Compiler.extraArguments("-DNAME='unfinished") }
+    assertThrows(IllegalArgumentException::class.java) { Compiler.extraArguments("-DNAME=one\n-lm") }
   }
   @Test fun processFailuresAndLimits() {
     val root = Files.createTempDirectory("neuoj-process-test")
     try {
-      val normal = Processes.execute(listOf("/bin/cat"), root, "a\n", 1000, AtomicBoolean())
+      val probe = processProbe(root)
+      val normal = Processes.execute(probe + "echo", root, "a\n", 5000, AtomicBoolean())
       assertEquals("a\n", normal.stdout); assertEquals(0, normal.exitCode)
-      val bad = Processes.execute(listOf("/bin/sh", "-c", "echo diagnostic >&2; exit 7"), root, timeoutMs = 1000, cancelled = AtomicBoolean())
+      val bad = Processes.execute(probe + "fail", root, timeoutMs = 5000, cancelled = AtomicBoolean())
       assertEquals(7, bad.exitCode); assertTrue(bad.stderr.contains("diagnostic"))
-      assertEquals("超时", Processes.execute(listOf("/bin/sleep", "10"), root, timeoutMs = 100, cancelled = AtomicBoolean()).failure)
-      assertEquals("已取消", Processes.execute(listOf("/bin/sleep", "10"), root, timeoutMs = 1000, cancelled = AtomicBoolean(true)).failure)
-      assertEquals("输出超限", Processes.execute(listOf("/usr/bin/yes"), root, timeoutMs = 1000, cancelled = AtomicBoolean(), maxBytes = 1024).failure)
+      val timed = Processes.execute(probe + listOf("sleep", "180"), root, timeoutMs = 5000, cancelled = AtomicBoolean())
+      assertNull(timed.failure); assertTrue(timed.elapsedMs >= 150); assertTrue(timed.elapsedMs < 5000)
+      assertEquals("超时", Processes.execute(probe + "echo", root, timeoutMs = 0, cancelled = AtomicBoolean()).failure)
+      assertEquals("超时", Processes.execute(probe + listOf("sleep", "5000"), root, timeoutMs = 100, cancelled = AtomicBoolean()).failure)
+      assertEquals("已取消", Processes.execute(probe + listOf("sleep", "5000"), root, timeoutMs = 1000, cancelled = AtomicBoolean(true)).failure)
+      assertEquals("输出超限", Processes.execute(probe + "spam", root, timeoutMs = 5000, cancelled = AtomicBoolean(), maxBytes = 1024).failure)
       val cancel = AtomicBoolean()
       val thread = Thread { Thread.sleep(100); cancel.set(true) }.apply { start() }
-      assertEquals("已取消", Processes.execute(listOf("/bin/sleep", "10"), root, timeoutMs = 2000, cancelled = cancel).failure)
+      assertEquals("已取消", Processes.execute(probe + listOf("sleep", "5000"), root, timeoutMs = 2000, cancelled = cancel).failure)
       thread.join()
     } finally { root.toFile().deleteRecursively() }
   }
@@ -193,8 +301,12 @@ class CoreTest {
       assertEquals(result.compile.stderr, 0, result.compile.exitCode)
       assertTrue(CompareMode.EXACT.matches(result.tests.single().process.stdout, p.samples.single().output))
       assertFalse(Files.exists(root.resolve("runner-created.txt")))
+      Files.writeString(source, "#ifndef NEUOJ_TEST_FLAG\n#error missing custom flag\n#endif\n" + Files.readString(source))
+      val withFlag = Runner().run(p, source, compiler, "C++14", true, AtomicBoolean(), extraArguments = "-DNEUOJ_TEST_FLAG=1")
+      assertEquals(withFlag.compile.stderr, 0, withFlag.compile.exitCode)
+      assertEquals("1\n", withFlag.tests.single().process.stdout)
       val phases = mutableListOf<String>()
-      Runner().run(p, source, compiler, "C++14", false, AtomicBoolean(),
+      Runner().run(p, source, compiler, "C++14", false, AtomicBoolean(), extraArguments = "-DNEUOJ_TEST_FLAG=1",
         onRunning = { phases.add("运行:$it") }, onCompleted = { phases.add("完成:${it.sampleId}") })
       assertEquals(listOf("运行:official-1", "完成:official-1"), phases)
       Files.writeString(source, "invalid code")
