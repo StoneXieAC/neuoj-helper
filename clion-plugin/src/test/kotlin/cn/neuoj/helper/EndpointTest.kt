@@ -18,13 +18,16 @@ class EndpointTest {
       val source = root.resolve("current.cpp")
       Files.writeString(source, "用户代码")
       var receiving = true
-      LocalEndpoint(0) { if (!receiving) throw NoReceiverException(); workspace.importProblem(it, source) }.use { endpoint ->
+      val token = "a".repeat(64)
+      val submissions = SubmissionQueue()
+      LocalEndpoint(0, submissions) { problem, _ -> if (!receiving) throw NoReceiverException(); workspace.importProblem(problem, source) }.use { endpoint ->
         endpoint.start()
         val client = HttpClient.newHttpClient()
-        fun request(path: String, body: String? = null, origin: String? = null): HttpResponse<String> {
+        fun request(path: String, body: String? = null, origin: String? = null, pair: String = token): HttpResponse<String> {
           val builder = HttpRequest.newBuilder(URI("http://127.0.0.1:${endpoint.port}/v1/$path"))
             .timeout(Duration.ofSeconds(5))
           if (origin != null) builder.header("Origin", origin)
+          builder.header("X-NEUOJ-Pair", pair)
           if (body != null) builder.header("Content-Type", "application/json").POST(HttpRequest.BodyPublishers.ofString(body))
           return client.send(builder.build(), HttpResponse.BodyHandlers.ofString())
         }
@@ -40,6 +43,15 @@ class EndpointTest {
         val body = Gson().toJson(p)
         assertEquals(400, request("problems", body.replace("\"input\":\"1\\n\"", "\"input\":42")).statusCode())
         assertEquals(200, request("problems", body).statusCode())
+        val answer = submissions.enqueue(token, p, "C++14", "int main(){}")
+        assertEquals(400, request("submissions/next", pair = "b".repeat(64)).statusCode())
+        val next = request("submissions/next")
+        assertEquals(200, next.statusCode())
+        val job = com.google.gson.JsonParser.parseString(next.body()).asJsonObject
+        assertEquals("int main(){}", job.get("source").asString)
+        val result = Gson().toJson(SubmissionResult(job.get("id").asString, true, "https://oj.neu.edu.cn/submissions/123"))
+        assertEquals(200, request("submissions/results", result).statusCode())
+        assertTrue(answer.get().ok)
         assertEquals(source, workspace.source(p.id))
         assertEquals(listOf(source), Files.list(root).use { it.toList() })
         receiving = false

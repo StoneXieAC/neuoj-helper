@@ -10,8 +10,8 @@
   <main>
     <header class="toolbar">
       <p id="message" role="status" aria-live="polite"></p>
-      <button id="restore" type="button" class="secondary">恢复</button>
-      <button id="save" type="submit" form="settings" disabled>确认</button>
+      <button id="restore" type="button" class="secondary" disabled>恢复修改</button>
+      <button id="save" type="submit" form="settings" disabled>确认保存</button>
     </header>
     <div class="layout">
       <nav id="categories" aria-label="设置分类"></nav>
@@ -26,7 +26,7 @@
           <label for="model">Model</label>
           <input id="model" name="model" type="text" required spellcheck="false" autocomplete="off">
           <label for="reasoningEffort">思考等级</label>
-          <input id="reasoningEffort" name="reasoningEffort" type="text" spellcheck="false" autocomplete="off">
+          <input id="reasoningEffort" name="reasoningEffort" type="text" value="low" spellcheck="false" autocomplete="off">
           <div class="connection-actions">
             <button id="testConnection" type="button" class="secondary" disabled>测试连接</button>
             <p id="connectionMessage" role="status" aria-live="polite"></p>

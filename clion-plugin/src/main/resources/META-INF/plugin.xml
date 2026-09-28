@@ -2,7 +2,7 @@
   <id>cn.neuoj.helper</id>
   <name>NEUOJ Helper</name>
   <vendor>NEUOJ Helper</vendor>
-  <description>NEUOJ Helper imports programming problems and samples into the IDE, compiles C++ with a local compiler, and compares local output. 导入题目与样例后，可在本地编译运行并比较结果。</description>
+  <description>NEUOJ Helper 支持将 NEUOJ 题目的样例导入 IDE，在本地测试 C/C++ 代码，并直接提交至 NEUOJ。</description>
   <depends>com.intellij.modules.platform</depends>
   <depends>com.intellij.clion</depends>
   <extensions defaultExtensionNs="com.intellij">

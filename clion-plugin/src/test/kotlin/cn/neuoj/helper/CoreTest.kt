@@ -47,6 +47,23 @@ class CoreTest {
     assertEquals(40, image.height)
     assertTrue(image.getRGB(20, 20) ushr 24 > 0)
   }
+  @Test fun submissionRecordLinksStayInTheImportedEntry() {
+    val vpn = "https://webvpn.neu.edu.cn${Protocol.VPN}"
+    assertEquals("https://oj.neu.edu.cn/submissions", SubmissionLinks.records("https://oj.neu.edu.cn/problems/83"))
+    assertEquals("https://oj.neu.edu.cn/training/1/status", SubmissionLinks.records("https://oj.neu.edu.cn/training/1/part/4/problem/9"))
+    assertEquals("https://oj.neu.edu.cn/contest/162/submissions", SubmissionLinks.records("https://oj.neu.edu.cn/contest/162/problem/A"))
+    assertEquals("$vpn/exam/46/submissions", SubmissionLinks.records("$vpn/exam/46/problem/F"))
+    assertEquals("$vpn/training/1/status", SubmissionLinks.records("$vpn/training/1/part/4/problem/9?tab=answer"))
+    assertNull(SubmissionLinks.records("https://webvpn.neu.edu.cn/https/other/exam/46/problem/F"))
+    assertNull(SubmissionLinks.records("https://evil.example/problems/83"))
+  }
+  @Test fun submissionReviewCopyDistinguishesUnverifiedAndDefiniteErrors() {
+    assertEquals("请在 NEUOJ 提交记录中核对提交结果。", SUBMISSION_REVIEW_MESSAGE)
+    assertTrue(needsSubmissionReview(null))
+    assertTrue(needsSubmissionReview(SUBMISSION_REVIEW_MESSAGE))
+    assertTrue(needsSubmissionReview("连接中断"))
+    assertFalse(needsSubmissionReview("提交令牌或语言选项缺失。"))
+  }
   @Test fun comparison() {
     assertTrue(CompareMode.TOKENS.matches(" 1\t23\n", "1 23"))
     assertFalse(CompareMode.TOKENS.matches("1 23", "12 3"))
@@ -104,6 +121,16 @@ class CoreTest {
     row.setSize(400, 100); row.doLayout()
     assertEquals(384, card.width); assertEquals(8, card.x)
   }
+  @Test fun submissionBannerMatchesTestCaseWidthWithScrollbar() {
+    for (width in listOf(400, 700, 1000)) {
+      val testCase = JPanel().apply { preferredSize = Dimension(100, 30) }
+      val banner = JPanel().apply { preferredSize = Dimension(100, 30) }
+      CardRow(testCase).apply { setSize(width - 16, 30); doLayout() }
+      CardRow(banner) { 16 }.apply { setSize(width, 30); doLayout() }
+      assertEquals(testCase.x, banner.x)
+      assertEquals(testCase.width, banner.width)
+    }
+  }
   @Test fun wheelOnNonScrollableFieldMovesOuterCards() {
     val longPanel = JPanel().apply { preferredSize = Dimension(100, 1000) }
     val outer = JScrollPane(longPanel).apply { setSize(100, 100); doLayout(); verticalScrollBar.unitIncrement = 18 }
@@ -158,6 +185,42 @@ class CoreTest {
     assertThrows(IllegalArgumentException::class.java) { Protocol.validate(p.copy(protocolVersion = 2)) }
     assertThrows(IllegalArgumentException::class.java) { Protocol.validate(p.copy(samples = mutableListOf())) }
     assertThrows(IllegalArgumentException::class.java) { Protocol.validate(p.copy(id = "../escape")) }
+  }
+  @Test fun pairedSubmissionQueue() {
+    val queue = SubmissionQueue()
+    val token = "a".repeat(64)
+    val other = "b".repeat(64)
+    val p = problem()
+    assertThrows(IllegalArgumentException::class.java) { queue.register("short", p.id) }
+    queue.register(token, p.id)
+    assertThrows(IllegalArgumentException::class.java) { queue.enqueue(other, p, "C++14", "int main(){}") }
+    assertThrows(IllegalArgumentException::class.java) { queue.enqueue(token, p, "C++98", "int main(){}") }
+    assertThrows(IllegalArgumentException::class.java) { queue.enqueue(token, p, "C", " ") }
+    val answer = queue.enqueue(token, p, "C++14", "int main(){}")
+    assertThrows(IllegalArgumentException::class.java) { queue.next(other, 1) }
+    val job = queue.next(token, 1)!!
+    assertEquals(p.id, job.problemId)
+    assertEquals("int main(){}", job.source)
+    assertThrows(IllegalArgumentException::class.java) {
+      queue.complete(other, SubmissionResult(job.id, true, "https://oj.neu.edu.cn/submissions/123"))
+    }
+    assertThrows(IllegalArgumentException::class.java) {
+      queue.complete(token, SubmissionResult(job.id, true, "https://evil.example/submissions/123"))
+    }
+    queue.complete(token, SubmissionResult(job.id, true, "https://oj.neu.edu.cn/submissions/123"))
+    assertTrue(answer.get().ok)
+    assertThrows(IllegalArgumentException::class.java) {
+      queue.complete(token, SubmissionResult(job.id, true, "https://oj.neu.edu.cn/submissions/123"))
+    }
+    val vpn = p.copy(id = "webvpn:/exam/46/problem/F", url = "https://webvpn.neu.edu.cn${Protocol.VPN}/exam/46/problem/F")
+    queue.register(token, vpn.id)
+    val vpnAnswer = queue.enqueue(token, vpn, "C", "int main(void){}")
+    val vpnJob = queue.next(token, 1)!!
+    assertThrows(IllegalArgumentException::class.java) {
+      queue.complete(token, SubmissionResult(vpnJob.id, true, "https://webvpn.neu.edu.cn/https/other/submissions/9"))
+    }
+    queue.complete(token, SubmissionResult(vpnJob.id, true, "https://webvpn.neu.edu.cn${Protocol.VPN}/exam/46/submissions/9"))
+    assertTrue(vpnAnswer.get().ok)
   }
   @Test fun workspaceBindsExistingSourceWithoutCreatingFiles() {
     val root = Files.createTempDirectory("neuoj-workspace-test")
@@ -293,7 +356,12 @@ class CoreTest {
       assertEquals("-DNAME='hello world' -lm", settings.config.extraArguments)
       Files.delete(gxx)
       assertThrows(IllegalArgumentException::class.java) { Compiler.validate(gxx.toString()) }
-      Compiler.standards.forEach { assertEquals("-std=c++${it.removePrefix("C++")}", Compiler.standardFlag(it)) }
+      Compiler.standards.forEach { standard ->
+        assertEquals(if (standard.startsWith("C++")) "-std=c++${standard.removePrefix("C++")}" else "-std=c${standard.removePrefix("C")}",
+          Compiler.standardFlag(standard))
+        assertEquals(if (standard.startsWith("C++")) "C++14" else "C", Compiler.language(standard))
+      }
+      assertEquals("c", Compiler.command("gcc", "C11", false, root.resolve("a.c"), root.resolve("a"))[3])
       val command = Compiler.command("/path with spaces/g++", "C++17", true, root.resolve("source file.cpp"), root.resolve("output file"))
       assertEquals(8, command.size); assertEquals("-O2", command[2])
       val withoutOptimization = Compiler.command("/path with spaces/g++", "C++17", false, root.resolve("source file.cpp"), root.resolve("output file"))
@@ -363,6 +431,18 @@ class CoreTest {
       Files.writeString(source, "invalid code")
       assertTrue(Runner().run(p, source, compiler, "C++14", false, AtomicBoolean()).tests.isEmpty())
       assertEquals(listOf(source), Files.list(root).use { it.toList() })
+    } finally { root.toFile().deleteRecursively() }
+  }
+  @Test fun realCCompiler() {
+    val compiler = System.getenv("NEUOJ_TEST_GCC") ?: return
+    Compiler.validate(compiler, "C11")
+    val root = Files.createTempDirectory("neuoj-real-c-")
+    try {
+      val source = root.resolve("answer.c")
+      Files.writeString(source, "#include <stdio.h>\nint main(void) { int n; scanf(\"%d\", &n); printf(\"%d\\n\", n); return 0; }\n")
+      val result = Runner().run(problem(), source, compiler, "C11", false, AtomicBoolean())
+      assertEquals(result.compile.stderr, 0, result.compile.exitCode)
+      assertEquals("1\n", result.tests.single().process.stdout)
     } finally { root.toFile().deleteRecursively() }
   }
 }

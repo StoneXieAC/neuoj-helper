@@ -18,6 +18,7 @@ const fields = {
   systemPrompt: document.getElementById('systemPrompt')
 };
 let defaultPrompt = '';
+let savedValues;
 
 function selectCategory(id, focus = false) {
   for (const category of CATEGORIES) {
@@ -76,9 +77,11 @@ Promise.all([
   fields.baseUrl.value = saved.baseUrl || 'https://api.deepseek.com';
   fields.apiKey.value = saved.apiKey || '';
   fields.model.value = saved.model || 'deepseek-flash';
-  fields.reasoningEffort.value = saved.reasoningEffort ?? '';
+  fields.reasoningEffort.value = saved.reasoningEffort ?? 'low';
   fields.systemPrompt.value = saved.systemPrompt == null ? prompt : saved.systemPrompt;
+  savedValues = Object.fromEntries(Object.entries(fields).map(([key, field]) => [key, field.value]));
   saveButton.disabled = false;
+  restoreButton.disabled = false;
   testButton.disabled = false;
 }).catch(error => {
   message.textContent = `加载设置失败：${error.message}`;
@@ -89,7 +92,13 @@ document.getElementById('restoreDefault').addEventListener('click', () => {
   message.textContent = '';
 });
 
-restoreButton.addEventListener('click', () => window.close());
+restoreButton.addEventListener('click', () => {
+  if (!savedValues) return;
+  for (const [key, value] of Object.entries(savedValues)) fields[key].value = value;
+  message.textContent = '';
+  connectionMessage.textContent = '';
+  delete connectionMessage.dataset.state;
+});
 
 testButton.addEventListener('click', async () => {
   const baseUrl = parseBaseUrl(fields.baseUrl.value);

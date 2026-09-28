@@ -9,9 +9,12 @@ const SETTINGS_WINDOW_KEY = 'settingsWindowId';
 const RESULTS_KEY = 'analysisResults';
 const MAX_RESULTS = 10;
 const VPN_PREFIX = '/https/62304135386136393339346365373340bfebea318fd008d8f60d257088';
+const BRIDGE_TOKEN_KEY = 'ideBridgeToken';
+const BRIDGE_TABS_KEY = 'ideBridgeTabs';
 let systemPromptPromise;
 let optionsOpening;
 let cacheWrite = Promise.resolve();
+let bridgeLoop;
 
 function allowedBaseUrl(value) {
   try {
@@ -399,9 +402,10 @@ restrictStorage().catch(console.error);
 chrome.action.onClicked.addListener(tab => { openOptionsPopup(tab?.windowId).catch(console.error); });
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (!['OPEN_OPTIONS', 'GET_CACHED_RESULT', 'TEST_CONNECTION', 'IDE_IMPORT'].includes(message?.type)) return false;
+  if (!['OPEN_OPTIONS', 'GET_CACHED_RESULT', 'TEST_CONNECTION', 'IDE_IMPORT', 'IDE_BRIDGE_READY'].includes(message?.type)) return false;
   (async () => {
     if (message.type === 'IDE_IMPORT') return importToIde(message.problem, sender);
+    if (message.type === 'IDE_BRIDGE_READY') { await rememberBridgeTab(sender); return { ok: true }; }
     if (message.type === 'TEST_CONNECTION') return testConnection(message, sender);
     validateSender(sender);
     if (message.type === 'OPEN_OPTIONS') {
@@ -467,6 +471,108 @@ function ideSource(raw) {
   } catch { return null; }
 }
 
+function ideScope(raw) {
+  try {
+    const url = new URL(raw);
+    if (url.protocol !== 'https:' || url.username || url.password || url.port) return null;
+    if (url.hostname === 'oj.neu.edu.cn') return url.origin;
+    if (url.hostname === 'webvpn.neu.edu.cn' && url.pathname.startsWith(`${VPN_PREFIX}/`)) return `${url.origin}${VPN_PREFIX}`;
+  } catch { /* 无效地址。 */ }
+  return null;
+}
+
+async function bridgeToken(create = false) {
+  const storage = chrome.storage.session;
+  if (!storage) throw new Error('浏览器不支持本次会话的 IDE 配对存储。');
+  const saved = await storage.get(BRIDGE_TOKEN_KEY);
+  if (typeof saved[BRIDGE_TOKEN_KEY] === 'string') return saved[BRIDGE_TOKEN_KEY];
+  if (!create) return null;
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  const token = [...bytes].map(value => value.toString(16).padStart(2, '0')).join('');
+  await storage.set({ [BRIDGE_TOKEN_KEY]: token });
+  return token;
+}
+
+async function rememberBridgeTab(sender) {
+  const scope = ideScope(sender?.url);
+  const tabId = sender?.tab?.id;
+  if (!scope || !Number.isInteger(tabId)) throw new Error('NEUOJ 页面无效。');
+  const storage = chrome.storage.session;
+  if (!storage) return;
+  const saved = await storage.get(BRIDGE_TABS_KEY);
+  const tabs = Array.isArray(saved[BRIDGE_TABS_KEY]) ? saved[BRIDGE_TABS_KEY] : [];
+  await storage.set({ [BRIDGE_TABS_KEY]: [{ tabId, scope }, ...tabs.filter(item => item.tabId !== tabId)].slice(0, 20) });
+}
+
+async function postBridgeResult(token, result) {
+  const response = await fetch('http://127.0.0.1:27121/v1/submissions/results', {
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'X-NEUOJ-Pair': token },
+    body: JSON.stringify(result), credentials: 'omit', redirect: 'error'
+  });
+  if (!response.ok) throw new Error(`IDE 未接受提交结果（${response.status}）。`);
+}
+
+async function dispatchSubmission(job) {
+  if (!job || typeof job.id !== 'string' || ideSource(job.url) !== job.problemId ||
+    !['C', 'C++14'].includes(job.language) || typeof job.source !== 'string' ||
+    job.source.length > 1_048_576) return { id: job?.id || '', ok: false, error: '提交任务无效。' };
+  const scope = ideScope(job.url);
+  const saved = await chrome.storage.session.get(BRIDGE_TABS_KEY);
+  const tabs = (saved[BRIDGE_TABS_KEY] || []).filter(item => item.scope === scope);
+  let item;
+  for (const candidate of tabs) {
+    try {
+      const tab = await chrome.tabs.get(candidate.tabId);
+      if (!tab.url || ideScope(tab.url) === scope) { item = candidate; break; }
+    } catch { /* 已关闭的标签页没有收到任务，可继续查找。 */ }
+  }
+  if (!item) return { id: job.id, ok: false, error: '请在浏览器中保留已登录的 NEUOJ 标签页，并重新导入题目。' };
+  try {
+    const result = await chrome.tabs.sendMessage(item.tabId, { type: 'IDE_SUBMIT', job });
+    if (result && typeof result.ok === 'boolean') return { id: job.id, ok: result.ok,
+      ...(result.url ? { url: result.url } : {}), ...(result.error ? { error: result.error } : {}) };
+  } catch { /* 可能已经发出提交，不换其他标签页重试。 */ }
+  return { id: job.id, ok: false, error: '请在 NEUOJ 提交记录中核对提交结果。' };
+}
+
+async function pollBridge(token) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 25000);
+  try {
+    const response = await fetch('http://127.0.0.1:27121/v1/submissions/next', {
+      headers: { 'X-NEUOJ-Pair': token }, signal: controller.signal, credentials: 'omit', redirect: 'error'
+    });
+    if (response.status === 204) return;
+    if (!response.ok) throw new Error(`IDE 连接失败（${response.status}）。`);
+    const job = await response.json();
+    const result = await dispatchSubmission(job);
+    await postBridgeResult(token, result);
+  } finally { clearTimeout(timer); }
+}
+
+function startBridge() {
+  if (bridgeLoop) return bridgeLoop;
+  bridgeLoop = (async () => {
+    const token = await bridgeToken();
+    if (!token) return;
+    let failures = 0;
+    while (true) {
+      try { await pollBridge(token); failures = 0; }
+      catch {
+        if (++failures >= 2) return;
+        await new Promise(resolve => setTimeout(resolve, 3000));
+      }
+    }
+  })().finally(() => { bridgeLoop = null; });
+  return bridgeLoop;
+}
+
+chrome.runtime.onStartup.addListener(() => { startBridge().catch(console.error); });
+if (chrome.alarms) chrome.alarms.onAlarm.addListener(alarm => {
+  if (alarm.name === 'neuoj-bridge') startBridge().catch(console.error);
+});
+
 async function importToIde(problem, sender) {
   const identity = ideSource(sender?.url);
   if (!identity || problem?.id !== identity || ideSource(problem?.url) !== identity || problem.protocolVersion !== 1 ||
@@ -477,11 +583,12 @@ async function importToIde(problem, sender) {
   }
   const body = JSON.stringify(problem);
   if (body.length > 2 * 1024 * 1024) throw new Error('题目数据过大。');
+  const token = await bridgeToken(true);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 10000);
   async function request(path, options = {}) {
     const response = await fetch(`http://127.0.0.1:27121/v1/${path}`, {
-      ...options, headers: { 'Content-Type': 'application/json' },
+      ...options, headers: { 'Content-Type': 'application/json', 'X-NEUOJ-Pair': token },
       signal: controller.signal, redirect: 'error', credentials: 'omit'
     });
     if (response.status === 403) throw new Error('IDE 拒绝了当前扩展的连接来源。');
@@ -490,9 +597,15 @@ async function importToIde(problem, sender) {
   }
   try {
     const capabilities = await request('capabilities');
-    if (capabilities.protocolVersion !== 1 || !capabilities.capabilities?.includes('importProblem')) throw new Error('IDE 协议版本不兼容。');
+    if (capabilities.protocolVersion !== 1 || !capabilities.capabilities?.includes('importProblem') ||
+      !capabilities.capabilities?.includes('submitCode')) throw new Error('IDE 协议版本不兼容。');
     const result = await request('problems', { method: 'POST', body });
     if (!result.ok) throw new Error('IDE 未能完成导入。');
+    await rememberBridgeTab(sender);
+    if (chrome.alarms) {
+      await chrome.alarms.create('neuoj-bridge', { periodInMinutes: 1 });
+      startBridge().catch(console.error);
+    }
     return { ok: true };
   } catch (error) {
     if (controller.signal.aborted) throw new Error('IDE 连接超时。');

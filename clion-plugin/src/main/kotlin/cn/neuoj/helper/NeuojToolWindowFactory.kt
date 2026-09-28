@@ -3,6 +3,7 @@ package cn.neuoj.helper
 import com.intellij.openapi.Disposable
 import com.intellij.notification.NotificationGroupManager
 import com.intellij.notification.NotificationType
+import com.intellij.ide.BrowserUtil
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.options.ShowSettingsUtil
@@ -11,6 +12,7 @@ import com.intellij.openapi.ui.Messages
 import com.intellij.openapi.wm.ToolWindow
 import com.intellij.openapi.wm.ToolWindowFactory
 import com.intellij.ui.content.ContentFactory
+import com.intellij.ui.EditorNotificationPanel
 import java.awt.BorderLayout
 import java.awt.Dimension
 import java.awt.FlowLayout
@@ -31,6 +33,7 @@ import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
 import java.awt.event.MouseWheelEvent
 import java.util.UUID
+import java.nio.file.Files
 import java.util.concurrent.atomic.AtomicBoolean
 import javax.swing.*
 import javax.swing.text.Highlighter
@@ -136,14 +139,15 @@ private class CardsPanel : JPanel(), Scrollable {
   override fun getScrollableTracksViewportHeight() = false
 }
 
-internal class CardRow(private val card: JComponent) : JPanel(null) {
+internal class CardRow(private val card: JComponent, private val reservedRight: () -> Int = { 0 }) : JPanel(null) {
   init { alignmentX = LEFT_ALIGNMENT; isOpaque = false; add(card) }
   override fun getPreferredSize() = Dimension(840, card.preferredSize.height)
   override fun getMaximumSize() = Dimension(Int.MAX_VALUE, preferredSize.height)
   override fun doLayout() {
-    val margin = if (width >= 600) 24 else 8
-    val cardWidth = minOf(840, (width - margin * 2).coerceAtLeast(0))
-    card.setBounds((width - cardWidth) / 2, 0, cardWidth, card.preferredSize.height)
+    val availableWidth = (width - reservedRight()).coerceAtLeast(0)
+    val margin = if (availableWidth >= 600) 24 else 8
+    val cardWidth = minOf(840, (availableWidth - margin * 2).coerceAtLeast(0))
+    card.setBounds((availableWidth - cardWidth) / 2, 0, cardWidth, card.preferredSize.height)
   }
 }
 
@@ -229,6 +233,7 @@ class NeuojToolWindowFactory : ToolWindowFactory {
 class HelperPanel(private val project: Project) : JPanel(BorderLayout(0, 6)), Disposable {
   private val service = project.getService(ProjectWorkspace::class.java)
   private val problemTitle = JLabel("无题目")
+  private val submissionBannerHost = JPanel(BorderLayout()).apply { isOpaque = false; isVisible = false }
   private val cardsPanel = CardsPanel()
   private lateinit var cardsScroll: JScrollPane
   private var wheelEditor: JTextArea? = null
@@ -239,11 +244,14 @@ class HelperPanel(private val project: Project) : JPanel(BorderLayout(0, 6)), Di
   private var problem: Problem? = null
   private var cancellation = AtomicBoolean()
   private var running = false
+  private var submitting = false
   private var disposed = false
   private var generation = 0
+  private var problemRevision = 0
   private val changed: () -> Unit = { reload(service.lastImportedId ?: problem?.id) }
   private val runAll = icon("▶", "运行全部样例") { run(null) }
   private val stop = icon("■", "取消运行") { cancellation.set(true); updateStatus("正在取消…") }
+  private val submitButton = icon("↑", "提交当前代码") { submitCode() }
   private val add = icon("＋", "新增自定义样例") { addSample() }
   private val busyIcon = BusyIcon()
   private val busyTimer = Timer(80) {
@@ -257,8 +265,10 @@ class HelperPanel(private val project: Project) : JPanel(BorderLayout(0, 6)), Di
 
     val actions = JPanel().apply { layout = BoxLayout(this, BoxLayout.X_AXIS) }
     stop.isEnabled = false
+    submitButton.isEnabled = false
     actions.add(Box.createHorizontalGlue())
     actions.add(runAll); actions.add(Box.createHorizontalStrut(2)); actions.add(stop)
+    actions.add(Box.createHorizontalStrut(2)); actions.add(submitButton)
     val modeLabel = JLabel().apply { preferredSize = Dimension(64, 28); maximumSize = preferredSize }
     val modeSwitch = CompareSwitch().apply {
       isSelected = mode == CompareMode.EXACT
@@ -280,8 +290,11 @@ class HelperPanel(private val project: Project) : JPanel(BorderLayout(0, 6)), Di
     actions.add(Box.createHorizontalStrut(2))
     actions.add(icon("⚙", "编译器设置") { ShowSettingsUtil.getInstance().showSettingsDialog(project, HelperConfigurable::class.java) })
     actions.add(Box.createHorizontalStrut(2)); actions.add(icon("⌫", "清理此题") { deleteProblem() })
-    add(JPanel(BorderLayout(0, 4)).apply {
+    val header = JPanel(BorderLayout(0, 4)).apply {
       add(problemTitle, BorderLayout.NORTH); add(actions, BorderLayout.SOUTH)
+    }
+    add(JPanel(BorderLayout(0, 4)).apply {
+      add(header, BorderLayout.NORTH); add(submissionBannerHost, BorderLayout.SOUTH)
     }, BorderLayout.NORTH)
 
     val scroll = JScrollPane(cardsPanel).apply {
@@ -323,17 +336,35 @@ class HelperPanel(private val project: Project) : JPanel(BorderLayout(0, 6)), Di
   private fun updateStatus(message: String, failure: Boolean = false) {
     runAll.toolTipText = "运行全部样例 · $message"
     stop.toolTipText = "取消运行 · $message"
+    submitButton.toolTipText = "提交当前代码 · $message"
     if (failure) NotificationGroupManager.getInstance().getNotificationGroup("NEUOJ Helper")
       .createNotification(message, NotificationType.ERROR).notify(project)
   }
+  private fun clearSubmissionBanner() {
+    submissionBannerHost.removeAll(); submissionBannerHost.isVisible = false
+    submissionBannerHost.revalidate(); submissionBannerHost.repaint()
+  }
+  private fun showSubmissionBanner(message: String, actionText: String? = null, actionUrl: String? = null) {
+    val panel = EditorNotificationPanel(EditorNotificationPanel.Status.Info).text(message)
+    if (actionText != null && actionUrl != null)
+      panel.createActionLabel(actionText) { BrowserUtil.browse(actionUrl) }
+    panel.setCloseAction { clearSubmissionBanner() }
+    submissionBannerHost.removeAll()
+    submissionBannerHost.add(CardRow(panel) {
+      cardsScroll.verticalScrollBar.width.takeIf { it > 0 } ?: cardsScroll.verticalScrollBar.preferredSize.width
+    }, BorderLayout.CENTER)
+    submissionBannerHost.isVisible = true
+    submissionBannerHost.revalidate(); submissionBannerHost.repaint()
+  }
   private fun reload(id: String?) {
-    generation++; cancellation.set(true); runState.clear(); expanded.clear()
+    generation++; problemRevision++; cancellation.set(true); runState.clear(); expanded.clear(); clearSubmissionBanner()
     selectProblem(id?.let { service.workspace.load(it) } ?: service.workspace.list().firstOrNull())
   }
   private fun selectProblem(value: Problem?) {
     wheelEditor = null
-    if (value?.id != problem?.id) { generation++; cancellation.set(true); runState.clear(); expanded.clear() }
+    if (value?.id != problem?.id) { generation++; problemRevision++; cancellation.set(true); runState.clear(); expanded.clear(); clearSubmissionBanner() }
     problem = value
+    submitButton.isEnabled = value != null && !submitting
     problemTitle.text = value?.title ?: "无题目"
     updateStatus(if (value == null) "在浏览器题目页点击“导入题目”" else "已载入 ${value.samples.size} 组样例")
     cards.clear(); cardsPanel.removeAll()
@@ -578,10 +609,75 @@ class HelperPanel(private val project: Project) : JPanel(BorderLayout(0, 6)), Di
     p.samples.remove(sample); service.workspace.save(p); runState.reset(sample.id); expanded.remove(sample.id); selectProblem(p)
   }
   private fun deleteProblem() {
-    if (running) return
+    if (running || submitting) return
     val p = problem ?: return
     if (Messages.showYesNoDialog(project, "解除此题与代码文件的关联并清除本次会话的样例？代码文件不会删除。", "清理题目", Messages.getQuestionIcon()) != Messages.YES) return
-    service.workspace.delete(p.id); runState.clear(); reload(null)
+    service.workspace.delete(p.id); service.pairing.remove(p.id); runState.clear(); reload(null)
+  }
+  private fun submitCode() {
+    later { submitCodeInWriteIntent() }
+  }
+  private fun submitCodeInWriteIntent() {
+    if (submitting) return
+    val p = problem ?: return
+    val source = activeSourceFile(project)
+    if (source == null) { updateStatus("请先在编辑器中打开并保存本地代码文件", true); return }
+    val associated = service.workspace.source(p.id)
+    if (associated == null || !runCatching { Files.isSameFile(source, associated) }.getOrDefault(false)) {
+      updateStatus("当前文件与此题关联的代码文件不同，请切回 ${associated?.fileName ?: "原文件"}", true); return
+    }
+    val file = com.intellij.openapi.vfs.LocalFileSystem.getInstance().refreshAndFindFileByNioFile(source)
+    if (file == null) { updateStatus("当前代码文件不可用", true); return }
+    val sourceText = try {
+      ApplicationManager.getApplication().runWriteAction<String> {
+        val manager = FileDocumentManager.getInstance()
+        val document = manager.getDocument(file) ?: throw IllegalStateException("无法读取编辑器内容。")
+        manager.saveDocument(document)
+        if (manager.isDocumentUnsaved(document)) throw IllegalStateException("文件仍有未保存修改。")
+        document.text
+      }
+    } catch (error: Exception) { updateStatus("保存代码文件失败：${error.message}", true); return }
+    val language = runCatching { Compiler.language(HelperSettings.instance().config.standard) }.getOrElse {
+      updateStatus(it.message ?: "语言标准无效", true); return
+    }
+    val token = service.pairing[p.id]
+    if (token == null) { updateStatus("浏览器扩展尚未与此题配对，请重新导入题目", true); return }
+    val confirmed = Messages.showYesNoDialog(project,
+      "文件：${source.fileName}\n提交语言：$language\n确定向 NEUOJ 正式提交当前代码吗？",
+      "确认提交", "提交", "取消", Messages.getQuestionIcon())
+    if (confirmed != Messages.YES) return
+    submitting = true; submitButton.isEnabled = false
+    updateStatus("正在提交…")
+    showSubmissionBanner("正在向 NEUOJ 提交代码…")
+    val recordsUrl = SubmissionLinks.records(p.url)
+    val submittedRevision = problemRevision
+    ApplicationManager.getApplication().executeOnPooledThread {
+      val outcome = runCatching {
+        IdeBridge.instance().submit(token, p, language, sourceText).get()
+      }
+      later {
+        submitting = false; submitButton.isEnabled = problem != null
+        if (submittedRevision != problemRevision || problem?.id != p.id) return@later
+        outcome.onSuccess { result ->
+          if (result.ok && result.url != null) {
+            updateStatus("NEUOJ 已接受提交")
+            showSubmissionBanner("NEUOJ 已接受提交。", "查看提交", result.url)
+          } else {
+            val error = result.error
+            val review = needsSubmissionReview(error)
+            val message = if (review) SUBMISSION_REVIEW_MESSAGE else error ?: SUBMISSION_REVIEW_MESSAGE
+            updateStatus(message)
+            showSubmissionBanner(message, "查看提交记录", recordsUrl)
+          }
+        }.onFailure { error ->
+          val cause = error.cause ?: error
+          val review = cause !is IllegalArgumentException
+          val message = if (review) SUBMISSION_REVIEW_MESSAGE else cause.message ?: "提交任务无效。"
+          updateStatus(message)
+          showSubmissionBanner(message, "查看提交记录", recordsUrl)
+        }
+      }
+    }
   }
   private fun run(sampleId: String?) {
     later { runInWriteIntent(sampleId) }
@@ -624,7 +720,7 @@ class HelperPanel(private val project: Project) : JPanel(BorderLayout(0, 6)), Di
         running = false; runAll.icon = GlyphIcon("▶"); runAll.disabledIcon = null; runAll.isEnabled = true
         stop.isEnabled = false; add.isEnabled = true; busyTimer.stop()
         cards.forEach { it.setRunning(false) }
-        if (current != generation) { updateStatus("题目已变化，旧运行已取消"); return@later }
+        if (current != generation) return@later
         outcome.onSuccess { result ->
           runState.compileDiagnostic = "退出码：${result.compile.exitCode}\n${result.compile.failure ?: ""}\n${result.compile.stdout}\n${result.compile.stderr}"
           if (result.compile.failure != null || result.compile.exitCode != 0) {

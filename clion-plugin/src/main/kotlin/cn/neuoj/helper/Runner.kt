@@ -81,7 +81,11 @@ object Processes {
 }
 
 object Compiler {
-  val standards = listOf("C++98", "C++11", "C++14", "C++17", "C++20", "C++23", "C++26")
+  val standards = listOf("C89", "C99", "C11", "C17", "C23", "C++98", "C++11", "C++14", "C++17", "C++20", "C++23", "C++26")
+  fun language(standard: String): String {
+    require(standard in standards) { "语言标准无效。" }
+    return if (standard.startsWith("C++")) "C++14" else "C"
+  }
   fun extraArguments(value: String): List<String> {
     require('\n' !in value && '\r' !in value) { "编译参数只能填写一行。" }
     val result = mutableListOf<String>()
@@ -114,38 +118,40 @@ object Compiler {
     return result
   }
   fun standardFlag(standard: String): String {
-    require(standard in standards) { "C++ 标准无效。" }
-    return "-std=c++${standard.removePrefix("C++")}"
+    require(standard in standards) { "语言标准无效。" }
+    return if (standard.startsWith("C++")) "-std=c++${standard.removePrefix("C++")}" else "-std=c${standard.removePrefix("C")}"
   }
-  fun validate(path: String) {
+  fun validate(path: String, standard: String = "C++14") {
     val executable = Path.of(path)
-    require(executable.isAbsolute && Files.isRegularFile(executable) && Files.isExecutable(executable)) { "请选择存在且可执行的 C++ 编译器文件。" }
+    require(executable.isAbsolute && Files.isRegularFile(executable) && Files.isExecutable(executable)) { "请选择存在且可执行的编译器文件。" }
     val temp = Files.createTempDirectory("neuoj-compiler-check-")
     try {
-      val source = temp.resolve("probe.cpp")
+      val source = temp.resolve(if (language(standard) == "C") "probe.c" else "probe.cpp")
       val binary = temp.resolve(if (System.getProperty("os.name").startsWith("Windows", ignoreCase = true)) "probe.exe" else "probe")
-      Files.writeString(source, "#include <iostream>\nint main() { std::cout << 1; }\n")
-      val result = Processes.execute(command(path, "C++14", false, source, binary), temp, timeoutMs = 10_000, cancelled = AtomicBoolean())
+      Files.writeString(source, if (language(standard) == "C") "#include <stdio.h>\nint main(void) { puts(\"1\"); return 0; }\n"
+        else "#include <iostream>\nint main() { std::cout << 1; }\n")
+      val result = Processes.execute(command(path, standard, false, source, binary), temp, timeoutMs = 10_000, cancelled = AtomicBoolean())
       require(result.failure == null && result.exitCode == 0 && Files.isRegularFile(binary) && Files.isExecutable(binary)) {
-        "所选文件无法编译并链接 C++ 标准库程序。"
+        "所选编译器不支持 $standard 或无法完成链接。"
       }
     } finally {
       Files.walk(temp).use { paths -> paths.sorted(Comparator.reverseOrder()).forEach { Files.deleteIfExists(it) } }
     }
   }
-  fun detect(path: String = System.getenv("PATH") ?: ""): String? {
+  fun detect(path: String = System.getenv("PATH") ?: "", standard: String = "C++14"): String? {
+    val baseNames = if (language(standard) == "C") listOf("gcc", "clang", "g++", "clang++") else listOf("g++", "clang++", "gcc", "clang")
     val names = if (System.getProperty("os.name").startsWith("Windows", ignoreCase = true))
-      listOf("g++.exe", "gcc.exe", "g++", "gcc") else listOf("g++", "gcc")
+      baseNames.map { "$it.exe" } + baseNames else baseNames
     val directories = path.split(java.io.File.pathSeparator).filter { it.isNotBlank() }
     for (name in names) for (directory in directories) {
       val candidate = runCatching { Path.of(directory).resolve(name).toAbsolutePath() }.getOrNull() ?: continue
-      if (runCatching { validate(candidate.toString()) }.isSuccess) return candidate.toString()
+      if (runCatching { validate(candidate.toString(), standard) }.isSuccess) return candidate.toString()
     }
     return null
   }
   fun command(path: String, standard: String, optimize: Boolean, source: Path, binary: Path, extra: String = "") =
     listOf(path, standardFlag(standard)) + (if (optimize) listOf("-O2") else emptyList()) +
-      listOf("-x", "c++", source.toString(), "-o", binary.toString()) + extraArguments(extra)
+      listOf("-x", if (language(standard) == "C") "c" else "c++", source.toString(), "-o", binary.toString()) + extraArguments(extra)
 }
 
 data class TestResult(val sampleId: String, val process: ProcessResult)
@@ -156,7 +162,7 @@ class Runner {
     extraArguments: String = "",
     onRunning: (String) -> Unit = {}, onCompleted: (TestResult) -> Unit = {}): RunResult {
     require(Files.isRegularFile(source)) { "关联的代码文件不存在。" }
-    Compiler.validate(compiler)
+    Compiler.validate(compiler, standard)
     val temp = Files.createTempDirectory("neuoj-run-")
     try {
       val binary = temp.resolve(if (System.getProperty("os.name").startsWith("Windows", ignoreCase = true)) "solution.exe" else "solution")

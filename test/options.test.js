@@ -44,14 +44,14 @@ test('设置页使用默认 DeepSeek 配置并按域名申请权限', async () =
   const app = await setup();
   assert.equal(app.document.getElementById('baseUrl').value, 'https://api.deepseek.com');
   assert.equal(app.document.getElementById('model').value, 'deepseek-flash');
-  assert.equal(app.document.getElementById('reasoningEffort').value, '');
+  assert.equal(app.document.getElementById('reasoningEffort').value, 'low');
   app.document.getElementById('baseUrl').value = 'http://localhost:8765/v1/';
   app.document.getElementById('apiKey').value = 'secret';
   app.document.getElementById('model').value = 'another-model';
   app.document.getElementById('settings').dispatchEvent(new app.document.defaultView.Event('submit', { cancelable: true }));
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(app.requested.origins[0], 'http://localhost/*');
-  assert.deepEqual(JSON.parse(JSON.stringify(app.saved)), { baseUrl: 'http://localhost:8765/v1', apiKey: 'secret', model: 'another-model', reasoningEffort: '', systemPrompt: null });
+  assert.deepEqual(JSON.parse(JSON.stringify(app.saved)), { baseUrl: 'http://localhost:8765/v1', apiKey: 'secret', model: 'another-model', reasoningEffort: 'low', systemPrompt: null });
   assert.equal(app.closed, true);
 });
 
@@ -70,6 +70,11 @@ test('思考等级可自由填写，清空后仍能保存为空值', async () =>
   assert.equal(app.saved.reasoningEffort, '');
 });
 
+test('已保存的空思考等级不会被默认值覆盖', async () => {
+  const app = await setup(true, { reasoningEffort: '' });
+  assert.equal(app.document.getElementById('reasoningEffort').value, '');
+});
+
 test('测试连接使用未保存的表单值，不写入设置', async () => {
   const app = await setup();
   const doc = app.document;
@@ -81,7 +86,7 @@ test('测试连接使用未保存的表单值，不写入设置', async () => {
   assert.equal(app.requested.origins[0], 'https://draft.example/*');
   assert.equal(app.tested.type, 'TEST_CONNECTION');
   assert.equal(app.tested.settings.model, 'draft-model');
-  assert.equal(app.tested.settings.reasoningEffort, '');
+  assert.equal(app.tested.settings.reasoningEffort, 'low');
   assert.equal(app.saved, undefined);
   const connectionMessage = doc.getElementById('connectionMessage');
   assert.equal(connectionMessage.parentElement.querySelector('button'), doc.getElementById('testConnection'));
@@ -125,7 +130,8 @@ test('侧边栏按配置切换，键盘可切换分类', async () => {
   tabs[0].click();
   assert.equal(doc.getElementById('api-panel').hidden, false);
   assert.equal(doc.querySelector('h1'), null);
-  assert.equal(doc.getElementById('save').textContent, '确认');
+  assert.equal(doc.getElementById('restore').textContent, '恢复修改');
+  assert.equal(doc.getElementById('save').textContent, '确认保存');
   assert.equal(doc.getElementById('save').getAttribute('form'), 'settings');
   assert.ok(doc.querySelector('main > .toolbar').contains(doc.getElementById('restore')));
   assert.ok(doc.querySelector('main > .toolbar').contains(doc.getElementById('save')));
@@ -133,16 +139,37 @@ test('侧边栏按配置切换，键盘可切换分类', async () => {
   assert.equal(doc.getElementById('reasoningEffort').hasAttribute('aria-describedby'), false);
 });
 
-test('恢复丢弃跨分类草稿并关闭，不申请权限或写入存储', async () => {
-  const app = await setup(true, { apiKey: 'saved-key', systemPrompt: '已保存提示词' });
+test('恢复修改还原上次保存的跨分类设置并保持窗口打开', async () => {
+  const app = await setup(true, { baseUrl: 'https://saved.example/v1', apiKey: 'saved-key',
+    model: 'saved-model', reasoningEffort: '', systemPrompt: '已保存提示词' });
   const doc = app.document;
+  doc.getElementById('baseUrl').value = 'https://new.example/v1';
   doc.getElementById('apiKey').value = 'new-key';
+  doc.getElementById('model').value = 'new-model';
+  doc.getElementById('reasoningEffort').value = 'high';
   doc.getElementById('prompt-tab').click();
-  doc.getElementById('systemPrompt').value = '新提示词';
+  doc.getElementById('restoreDefault').click();
   doc.getElementById('restore').click();
-  assert.equal(app.closed, true);
+  assert.equal(doc.getElementById('baseUrl').value, 'https://saved.example/v1');
+  assert.equal(doc.getElementById('apiKey').value, 'saved-key');
+  assert.equal(doc.getElementById('model').value, 'saved-model');
+  assert.equal(doc.getElementById('reasoningEffort').value, '');
+  assert.equal(doc.getElementById('systemPrompt').value, '已保存提示词');
+  assert.equal(doc.getElementById('prompt-panel').hidden, false);
+  assert.equal(app.closed, false);
   assert.equal(app.saved, undefined);
   assert.equal(app.requested, undefined);
+});
+
+test('恢复修改还原未保存时的默认设置', async () => {
+  const app = await setup();
+  const doc = app.document;
+  doc.getElementById('reasoningEffort').value = 'high';
+  doc.getElementById('systemPrompt').value = '草稿';
+  doc.getElementById('restore').click();
+  assert.equal(doc.getElementById('reasoningEffort').value, 'low');
+  assert.equal(doc.getElementById('systemPrompt').value, defaultPrompt);
+  assert.equal(app.closed, false);
 });
 
 test('确认统一保存不同分类的修改', async () => {

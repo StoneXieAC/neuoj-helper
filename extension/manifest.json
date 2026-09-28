@@ -5,7 +5,7 @@
   "version": "0.1.0",
   "description": "提取 NEUOJ 提交中的排错信息，按需调用兼容 OpenAI 的模型分析。",
   "icons": { "128": "logo.png" },
-  "permissions": ["storage"],
+  "permissions": ["storage", "alarms"],
   "host_permissions": ["http://127.0.0.1/*"],
   "optional_host_permissions": ["https://*/*", "http://localhost/*"],
   "background": { "service_worker": "src/background.js" },

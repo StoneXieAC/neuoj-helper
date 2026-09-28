@@ -18,6 +18,7 @@ import javax.swing.SwingUtilities
 @Service(Service.Level.PROJECT)
 class ProjectWorkspace(val project: Project) {
   val workspace = Workspace()
+  val pairing = java.util.concurrent.ConcurrentHashMap<String, String>()
   @Volatile var lastImportedId: String? = null
   val listeners = CopyOnWriteArrayList<() -> Unit>()
   fun changed() = ApplicationManager.getApplication().invokeLater {
@@ -34,6 +35,7 @@ internal fun activeSourceFile(project: Project): Path? {
 
 @Service(Service.Level.APP)
 class IdeBridge : Disposable {
+  private val submissions = SubmissionQueue()
   @Volatile private var server: LocalEndpoint? = null
   @Volatile var status = "尚未启动"
     private set
@@ -41,7 +43,7 @@ class IdeBridge : Disposable {
   @Synchronized fun start() {
     if (server != null) return
     try {
-      val created = LocalEndpoint(27121) { problem ->
+      val created = LocalEndpoint(27121, submissions) { problem, token ->
         val completion = CompletableFuture<Unit>()
         ApplicationManager.getApplication().invokeLater {
           if (completion.isDone) return@invokeLater
@@ -62,6 +64,7 @@ class IdeBridge : Disposable {
             val source = activeSourceFile(target) ?: throw NoReceiverException()
             val storage = target.getService(ProjectWorkspace::class.java)
             storage.workspace.importProblem(problem, source)
+            storage.pairing[problem.id] = token
             storage.lastImportedId = problem.id
             storage.changed()
             completion.complete(Unit)
@@ -75,6 +78,8 @@ class IdeBridge : Disposable {
       status = "等待题目导入"
     } catch (_: Exception) { status = "导入功能启动失败，请检查端口占用。" }
   }
+  fun submit(token: String, problem: Problem, language: String, source: String) =
+    submissions.enqueue(token, problem, language, source)
   override fun dispose() { server?.close() }
   companion object { fun instance(): IdeBridge = ApplicationManager.getApplication().getService(IdeBridge::class.java) }
 }

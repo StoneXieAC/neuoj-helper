@@ -25,7 +25,8 @@ button { cursor:pointer; }
 .prompt-actions button, .toolbar button { padding:8px 16px; border:1px solid transparent; border-radius:6px; background:#066fd1; color:#fff; font:600 13px/18px system-ui,-apple-system,sans-serif; }
 .prompt-actions button:hover, .toolbar button:hover:not(:disabled) { background:#005fba; }
 .prompt-actions .secondary, .toolbar .secondary { border-color:#b9c7d9; background:#fff; color:#334155; }
-.prompt-actions .secondary:hover, .toolbar .secondary:hover { background:#f1f5f9; }
+.prompt-actions .secondary:hover, .toolbar button.secondary:hover:not(:disabled) { background:#f1f5f9; }
+.toolbar button.secondary:active:not(:disabled) { border-color:#066fd1; background:#066fd1; color:#fff; }
 .connection-actions > button.secondary { padding:8px 16px; border:1px solid #b9c7d9; border-radius:6px; background:#fff; color:#334155; font:600 13px/18px system-ui,-apple-system,sans-serif; }
 .connection-actions > button.secondary:hover:not(:disabled) { background:#f1f5f9; }
 button:disabled { opacity:.55; cursor:default; }

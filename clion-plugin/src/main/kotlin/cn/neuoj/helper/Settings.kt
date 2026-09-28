@@ -27,8 +27,8 @@ class HelperSettings : PersistentStateComponent<HelperSettings.Values> {
   override fun loadState(state: Values) { values = state }
   fun initializeCompiler(path: String = System.getenv("PATH") ?: ""): String {
     val current = synchronized(this) { values.compiler }
-    if (current.isNotBlank() && runCatching { Compiler.validate(current) }.isSuccess) return current
-    val detected = Compiler.detect(path) ?: ""
+    if (current.isNotBlank() && runCatching { Compiler.validate(current, values.standard) }.isSuccess) return current
+    val detected = Compiler.detect(path, values.standard) ?: ""
     synchronized(this) {
       if (values.compiler == current) values.compiler = detected
       return values.compiler
@@ -59,14 +59,14 @@ class HelperConfigurable : Configurable {
   override fun createComponent(): JComponent {
     content?.let { return it }
     if (!browseAdded) {
-      compiler.addBrowseFolderListener(null, FileChooserDescriptorFactory.createSingleFileDescriptor().withTitle("选择 C++ 编译器文件"))
+      compiler.addBrowseFolderListener(null, FileChooserDescriptorFactory.createSingleFileDescriptor().withTitle("选择 C/C++ 编译器文件"))
       browseAdded = true
     }
     compiler.preferredSize = Dimension(JBUI.scale(360), compiler.preferredSize.height)
     extraArguments.preferredSize = Dimension(JBUI.scale(360), extraArguments.preferredSize.height)
     val form = panel {
       row("编译器路径:") { cell(compiler).align(AlignX.LEFT).comment("推荐使用 GNU GCC/G++") }
-      row("C++ 标准:") { cell(standard).align(AlignX.LEFT) }
+      row("语言标准:") { cell(standard).align(AlignX.LEFT) }
       row { cell(optimize) }
       row("自定义编译参数:") {
         cell(extraArguments).align(AlignX.LEFT).comment("追加到默认编译命令；支持引号和反斜杠转义")
@@ -104,8 +104,8 @@ class HelperConfigurable : Configurable {
       // 设置验证由同步后台任务执行，避免在事件线程启动编译器。
       val error = java.util.concurrent.atomic.AtomicReference<Throwable?>()
       val completed = com.intellij.openapi.progress.ProgressManager.getInstance().runProcessWithProgressSynchronously(Runnable {
-        try { if (compiler.text.isNotBlank()) Compiler.validate(compiler.text) } catch (e: Exception) { error.set(e) }
-      }, "验证 C++ 编译器", true, null)
+        try { if (compiler.text.isNotBlank()) Compiler.validate(compiler.text, standard.selectedItem as String) } catch (e: Exception) { error.set(e) }
+      }, "验证编译器", true, null)
       if (!completed) throw ConfigurationException("已取消保存设置。")
       error.get()?.let { throw ConfigurationException(it.message ?: "编译器验证失败。") }
       HelperSettings.instance().saveCompiler(compiler.text, standard.selectedItem as String,
