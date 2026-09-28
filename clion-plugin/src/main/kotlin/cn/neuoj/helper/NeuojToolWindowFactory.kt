@@ -206,7 +206,7 @@ class HelperPanel(private val project: Project) : JPanel(BorderLayout(0, 6)), Di
       HelperSettings.instance().initializeCompiler()
       IdeBridge.instance().start()
       later {
-        if (HelperSettings.instance().config.compiler.isBlank()) updateStatus("请选择 GNU g++（⚙）")
+        if (HelperSettings.instance().config.compiler.isBlank()) updateStatus("请选择 C++ 编译器（⚙）")
       }
     }
   }
@@ -448,7 +448,7 @@ class HelperPanel(private val project: Project) : JPanel(BorderLayout(0, 6)), Di
       FileDocumentManager.getInstance().getDocument(file)?.let { FileDocumentManager.getInstance().saveDocument(it) }
     } catch (error: Exception) { updateStatus("保存代码文件失败：${error.message}", true); return }
     val settings = HelperSettings.instance().config.copy()
-    if (settings.compiler.isBlank()) { updateStatus("请选择 GNU g++（⚙）", true); return }
+    if (settings.compiler.isBlank()) { updateStatus("请选择 C++ 编译器（⚙）", true); return }
     val selected = p.samples.filter { sampleId == null || it.id == sampleId }
     if (selected.isEmpty()) return
     val snapshot = p.copy(samples = selected.map { it.copy() }.toMutableList())
@@ -463,7 +463,7 @@ class HelperPanel(private val project: Project) : JPanel(BorderLayout(0, 6)), Di
     busyTimer.start()
     updateStatus("正在编译并运行…")
     ApplicationManager.getApplication().executeOnPooledThread {
-      val outcome = runCatching { Runner().run(snapshot, source, settings.compiler, settings.standard, taskCancel,
+      val outcome = runCatching { Runner().run(snapshot, source, settings.compiler, settings.standard, settings.optimize, taskCancel,
         onRunning = { id -> later {
           if (current == generation) { runState.running(id); refreshResults(); updateStatus("正在运行样例…") }
         } },

@@ -27,4 +27,4 @@ WA 分析会保留页面提供的标准答案和用户输出；RE、TLE、MLE �
 
 ## CLion 竞赛辅助
 
-新增单文件 C++ 题目导入与本地样例测试功能。插件使用 GNU g++，支持配置编译器路径与 C++ 标准；不使用 Clang 回退。安装与构建见 [CLion 插件指南](clion-plugin/README.md)，浏览器通信见 [IDE 协议](docs/ide-protocol.md)。现有提交错误分析功能保持独立。
+新增单文件 C++ 题目导入与本地样例测试功能。插件支持自动探测和手动配置 C++ 编译器，并可配置 C++ 标准及 `-O2` 优化。安装与构建见 [CLion 插件指南](clion-plugin/README.md)，浏览器通信见 [IDE 协议](docs/ide-protocol.md)。现有提交错误分析功能保持独立。

@@ -113,21 +113,55 @@ class CoreTest {
     val root = Files.createTempDirectory("neuoj compiler test")
     try {
       assertNull(Compiler.detect(root.toString()))
-      val fake = root.resolve("g++")
-      Files.writeString(fake, "#!/bin/sh\nprintf '#define __GNUC__ 4\\n#define __clang__ 1\\n'\n")
-      fake.toFile().setExecutable(true)
+      val gcc = root.resolve("gcc")
+      Files.writeString(gcc, """
+        #!/bin/sh
+        case "$*" in *-fsyntax-only*) exit 0;; esac
+        exit 1
+      """.trimIndent())
+      gcc.toFile().setExecutable(true)
+      assertEquals(0, Processes.execute(listOf(gcc.toString(), "-fsyntax-only"), root, timeoutMs = 1000, cancelled = AtomicBoolean()).exitCode)
       assertNull(Compiler.detect(root.toString()))
-      assertThrows(IllegalArgumentException::class.java) { Compiler.validate(fake.toString()) }
-      Files.writeString(fake, "#!/bin/sh\nprintf '#define __GNUC__ 16\\n'\n")
-      assertEquals(fake.toString(), Compiler.detect(root.toString()))
-      val versioned = root.resolve("g++-16"); Files.move(fake, versioned)
-      Compiler.validate(versioned.toString())
+      assertThrows(IllegalArgumentException::class.java) { Compiler.validate(gcc.toString()) }
+      Files.writeString(gcc, "#!/bin/sh\nexit 0\n")
       assertNull(Compiler.detect(root.toString()))
-      Files.delete(versioned)
-      assertThrows(IllegalArgumentException::class.java) { Compiler.validate(versioned.toString()) }
+      val linker = """
+        #!/bin/sh
+        while [ "$#" -gt 0 ]; do
+          if [ "$1" = "-o" ]; then
+            shift
+            touch "$1"
+            chmod +x "$1"
+            exit 0
+          fi
+          shift
+        done
+        exit 1
+      """.trimIndent()
+      Files.writeString(gcc, linker)
+      assertEquals(gcc.toString(), Compiler.detect(root.toString()))
+      val other = Files.createDirectory(root.resolve("other"))
+      val gxx = other.resolve("g++")
+      Files.writeString(gxx, linker.replace("#!/bin/sh", "#!/bin/sh\nprintf '#define __clang__ 1\\n'"))
+      gxx.toFile().setExecutable(true)
+      assertEquals(gxx.toString(), Compiler.detect("$root${java.io.File.pathSeparator}$other"))
+      Compiler.validate(gxx.toString())
+      val settings = HelperSettings()
+      settings.loadState(HelperSettings.Values(compiler = root.resolve("missing").toString()))
+      assertEquals(gxx.toString(), settings.initializeCompiler("$root${java.io.File.pathSeparator}$other"))
+      assertTrue(settings.config.optimize)
+      settings.loadState(HelperSettings.Values(compiler = root.resolve("missing").toString()))
+      assertEquals("", settings.initializeCompiler(Files.createDirectory(root.resolve("empty")).toString()))
+      settings.saveCompiler(gcc.toString(), "C++17", false)
+      assertEquals(gcc.toString(), settings.initializeCompiler(other.toString()))
+      assertFalse(settings.config.optimize)
+      Files.delete(gxx)
+      assertThrows(IllegalArgumentException::class.java) { Compiler.validate(gxx.toString()) }
       Compiler.standards.forEach { assertEquals("-std=c++${it.removePrefix("C++")}", Compiler.standardFlag(it)) }
-      val command = Compiler.command("/path with spaces/g++-16", "C++17", root.resolve("source file.cpp"), root.resolve("output file"))
+      val command = Compiler.command("/path with spaces/g++", "C++17", true, root.resolve("source file.cpp"), root.resolve("output file"))
       assertEquals(8, command.size); assertEquals("-O2", command[2])
+      val withoutOptimization = Compiler.command("/path with spaces/g++", "C++17", false, root.resolve("source file.cpp"), root.resolve("output file"))
+      assertEquals(7, withoutOptimization.size); assertFalse(withoutOptimization.contains("-O2"))
       assertThrows(IllegalArgumentException::class.java) { Compiler.standardFlag("C++99") }
     } finally { root.toFile().deleteRecursively() }
   }
@@ -155,16 +189,16 @@ class CoreTest {
       val p = problem()
       val source = root.resolve("existing.cpp")
       Files.writeString(source, "#include <fstream>\n#include <iostream>\nint main(){std::ofstream(\"runner-created.txt\") << \"temporary\";int x;std::cin>>x;std::cout<<x<<'\\n';}\n")
-      val result = Runner().run(p, source, compiler, "C++14", AtomicBoolean())
+      val result = Runner().run(p, source, compiler, "C++14", true, AtomicBoolean())
       assertEquals(result.compile.stderr, 0, result.compile.exitCode)
       assertTrue(CompareMode.EXACT.matches(result.tests.single().process.stdout, p.samples.single().output))
       assertFalse(Files.exists(root.resolve("runner-created.txt")))
       val phases = mutableListOf<String>()
-      Runner().run(p, source, compiler, "C++14", AtomicBoolean(),
+      Runner().run(p, source, compiler, "C++14", false, AtomicBoolean(),
         onRunning = { phases.add("运行:$it") }, onCompleted = { phases.add("完成:${it.sampleId}") })
       assertEquals(listOf("运行:official-1", "完成:official-1"), phases)
       Files.writeString(source, "invalid code")
-      assertTrue(Runner().run(p, source, compiler, "C++14", AtomicBoolean()).tests.isEmpty())
+      assertTrue(Runner().run(p, source, compiler, "C++14", false, AtomicBoolean()).tests.isEmpty())
       assertEquals(listOf(source), Files.list(root).use { it.toList() })
     } finally { root.toFile().deleteRecursively() }
   }

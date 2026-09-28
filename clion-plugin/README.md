@@ -1,6 +1,6 @@
 # NEUOJ CLion 插件
 
-首版面向 macOS、CLion 2026.2.2，以 GNU g++ 编译当前文件中的单文件 C++。支持导入题面和样例、本地测试及两种输出比较模式。题目与代码文件的关联仅在本次 CLion 会话有效。正式提交与代码回传尚未实现。
+首版面向 macOS、CLion 2026.2.2，使用本机 C++ 编译器编译当前文件中的单文件 C++。支持导入题面和样例、本地测试及两种输出比较模式。题目与代码文件的关联仅在本次 CLion 会话有效。正式提交与代码回传尚未实现。
 
 ## 构建
 
@@ -19,10 +19,10 @@ Gradle Wrapper 默认将下载的 Gradle、Kotlin 与 IntelliJ Platform 依赖�
 
 本地校验器文件可存放在 `.deps/tools/`，例如执行 `./gradlew verifyPlugin -PlocalVerifierJar=../.deps/tools/verifier-cli-1.410-all.jar -PlocalIdePath="/实际路径/CLion.app"`。未指定本地校验器时，Gradle 会按构建配置获取。测试用 CLion 项目位于 `~/workspace/cpp/neuoj-helper`，可通过 `-PuiProject="$HOME/workspace/cpp/neuoj-helper"` 传给 `runIde`。
 
-本机真实 GNU GCC 闭环测试需要指定实际路径，避免误用 Apple Clang：
+本机真实编译闭环测试需要指定可用的 C++ 编译器路径：
 
 ```sh
-NEUOJ_TEST_GXX="$(which g++-16)" ./gradlew test --rerun-tasks -PlocalIdePath="/实际路径/CLion.app"
+NEUOJ_TEST_GXX="$(which g++)" ./gradlew test --rerun-tasks -PlocalIdePath="/实际路径/CLion.app"
 ```
 
 测试未提供此变量时仍运行比较、协议、工作区、进程和编译器识别测试，跳过真实编译闭环。插件 ZIP 位于 `build/distributions/`。不自动安装系统编译器。
@@ -31,10 +31,10 @@ NEUOJ_TEST_GXX="$(which g++-16)" ./gradlew test --rerun-tasks -PlocalIdePath="/�
 
 1. 在 CLion 设置的插件页选择“从磁盘安装插件”，安装 ZIP 并重启。
 2. 在 CLion 打开已有的本地代码文件及 `NEUOJ` 工具窗口。若有多个窗口，导入会使用切换到浏览器前最近使用的窗口和其中选中的文件。
-3. 在 NEUOJ Helper 设置中选择 GNU g++ 文件及 C++ 标准。首次仅检测 PATH 中的 `g++`；Apple Clang 会被拒绝，未找到时须手动选择。例如本机 Homebrew `g++-16` 的路径由 `which g++-16` 获取。
+3. 在 NEUOJ Helper 设置中配置编译器路径、C++ 标准和 `-O2` 优化。插件优先从 PATH 中查找可用的 `g++`，再查找 `gcc`；路径无效时会重新探测，未找到时可手动选择。GNU GCC/G++ 是推荐选项，Clang 也可使用。
 4. 在 NEUOJ 题目页点击“导入题目”，题目与样例会关联到当前打开的代码文件；编辑该文件后点击顶部运行图标。导入功能无需配置模型 API。
 
-编译器路径与标准为用户全局配置，会记住最近选择。默认标准为 C++14；可选 C++98、11、14、17、20、23、26。插件生成 `-std=c++XX -O2`，不提供完整命令输入，也不自动降级标准。
+编译器路径、标准和优化选项为用户全局配置，会记住最近选择。默认标准为 C++14；可选 C++98、11、14、17、20、23、26。默认启用 `-O2`，取消勾选后编译命令不再包含该参数；插件不提供完整命令输入，也不自动降级标准。
 
 顶部滑动开关可随时切换比较模式，关闭时为默认的忽略空白字符比较，开启时为逐字符比较，已有结果立即重新比较。忽略空白按 token 比较；逐字符比较只统一 CRLF 与 LF，空格、空行、末尾换行仍参与比较。编译和运行状态会在对应 TC 中实时显示；编译错误的诊断信息也在 TC 中查看。运行失败会显示 IDE 通知。
 

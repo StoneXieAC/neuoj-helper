@@ -69,29 +69,47 @@ object Compiler {
   }
   fun validate(path: String) {
     val executable = Path.of(path)
-    require(executable.isAbsolute && Files.isRegularFile(executable) && Files.isExecutable(executable)) { "请选择存在且可执行的 GNU g++ 文件。" }
-    val result = Processes.execute(listOf(path, "-dM", "-E", "-x", "c++", "-"), executable.parent, timeoutMs = 5000, cancelled = AtomicBoolean())
-    require(result.failure == null && result.exitCode == 0 && Regex("(?m)^#define __GNUC__ ").containsMatchIn(result.stdout) && !result.stdout.contains("#define __clang__ ")) { "所选编译器不是 GNU g++，请选择 GNU GCC 的 g++ 可执行文件。" }
+    require(executable.isAbsolute && Files.isRegularFile(executable) && Files.isExecutable(executable)) { "请选择存在且可执行的 C++ 编译器文件。" }
+    val temp = Files.createTempDirectory("neuoj-compiler-check-")
+    try {
+      val source = temp.resolve("probe.cpp")
+      val binary = temp.resolve(if (System.getProperty("os.name").startsWith("Windows", ignoreCase = true)) "probe.exe" else "probe")
+      Files.writeString(source, "#include <iostream>\nint main() { std::cout << 1; }\n")
+      val result = Processes.execute(command(path, "C++14", false, source, binary), temp, timeoutMs = 10_000, cancelled = AtomicBoolean())
+      require(result.failure == null && result.exitCode == 0 && Files.isRegularFile(binary) && Files.isExecutable(binary)) {
+        "所选文件无法编译并链接 C++ 标准库程序。"
+      }
+    } finally {
+      Files.walk(temp).use { paths -> paths.sorted(Comparator.reverseOrder()).forEach { Files.deleteIfExists(it) } }
+    }
   }
   fun detect(path: String = System.getenv("PATH") ?: ""): String? {
-    val candidate = path.split(java.io.File.pathSeparator).filter { it.isNotBlank() }.map { Path.of(it).resolve("g++").toAbsolutePath() }.firstOrNull { Files.isRegularFile(it) && Files.isExecutable(it) } ?: return null
-    return runCatching { validate(candidate.toString()); candidate.toString() }.getOrNull()
+    val names = if (System.getProperty("os.name").startsWith("Windows", ignoreCase = true))
+      listOf("g++.exe", "gcc.exe", "g++", "gcc") else listOf("g++", "gcc")
+    val directories = path.split(java.io.File.pathSeparator).filter { it.isNotBlank() }
+    for (name in names) for (directory in directories) {
+      val candidate = runCatching { Path.of(directory).resolve(name).toAbsolutePath() }.getOrNull() ?: continue
+      if (runCatching { validate(candidate.toString()) }.isSuccess) return candidate.toString()
+    }
+    return null
   }
-  fun command(path: String, standard: String, source: Path, binary: Path) = listOf(path, standardFlag(standard), "-O2", "-x", "c++", source.toString(), "-o", binary.toString())
+  fun command(path: String, standard: String, optimize: Boolean, source: Path, binary: Path) =
+    listOf(path, standardFlag(standard)) + (if (optimize) listOf("-O2") else emptyList()) +
+      listOf("-x", "c++", source.toString(), "-o", binary.toString())
 }
 
 data class TestResult(val sampleId: String, val process: ProcessResult)
 data class RunResult(val compile: ProcessResult, val tests: List<TestResult>)
 
 class Runner {
-  fun run(problem: Problem, source: Path, compiler: String, standard: String, cancelled: AtomicBoolean,
+  fun run(problem: Problem, source: Path, compiler: String, standard: String, optimize: Boolean, cancelled: AtomicBoolean,
     onRunning: (String) -> Unit = {}, onCompleted: (TestResult) -> Unit = {}): RunResult {
     require(Files.isRegularFile(source)) { "关联的代码文件不存在。" }
     Compiler.validate(compiler)
     val temp = Files.createTempDirectory("neuoj-run-")
     try {
       val binary = temp.resolve("solution")
-      val compile = Processes.execute(Compiler.command(compiler, standard, source, binary), temp, timeoutMs = 30_000, cancelled = cancelled)
+      val compile = Processes.execute(Compiler.command(compiler, standard, optimize, source, binary), temp, timeoutMs = 30_000, cancelled = cancelled)
       if (compile.failure != null || compile.exitCode != 0) return RunResult(compile, emptyList())
       val results = mutableListOf<TestResult>()
       for (sample in problem.samples) {
