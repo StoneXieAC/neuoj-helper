@@ -7,6 +7,7 @@
   <depends>com.intellij.clion</depends>
   <extensions defaultExtensionNs="com.intellij">
     <toolWindow id="NEUOJ" anchor="right" factoryClass="cn.neuoj.helper.NeuojToolWindowFactory"/>
+    <notificationGroup id="NEUOJ Helper" displayType="BALLOON" isLogByDefault="true"/>
     <applicationConfigurable id="cn.neuoj.helper.settings" displayName="NEUOJ Helper" instance="cn.neuoj.helper.HelperConfigurable"/>
   </extensions>
 </idea-plugin>
