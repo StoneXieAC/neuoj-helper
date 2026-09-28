@@ -22,7 +22,13 @@ import java.awt.GridBagLayout
 import java.awt.RenderingHints
 import java.awt.BasicStroke
 import java.awt.Color
+import java.awt.Component
+import java.awt.Container
 import java.awt.Shape
+import java.awt.event.FocusAdapter
+import java.awt.event.FocusEvent
+import java.awt.event.MouseAdapter
+import java.awt.event.MouseEvent
 import java.awt.event.MouseWheelEvent
 import java.nio.file.Files
 import java.util.UUID
@@ -123,7 +129,7 @@ private class CompareSwitch : JToggleButton() {
 }
 
 private class CardsPanel : JPanel(), Scrollable {
-  init { layout = BoxLayout(this, BoxLayout.Y_AXIS) }
+  init { layout = BoxLayout(this, BoxLayout.Y_AXIS); isFocusable = true }
   override fun getPreferredScrollableViewportSize() = preferredSize
   override fun getScrollableUnitIncrement(visibleRect: java.awt.Rectangle, orientation: Int, direction: Int) = 18
   override fun getScrollableBlockIncrement(visibleRect: java.awt.Rectangle, orientation: Int, direction: Int) = visibleRect.height
@@ -142,11 +148,25 @@ internal class CardRow(private val card: JComponent) : JPanel(null) {
   }
 }
 
-internal class ForwardingScrollPane(view: JComponent, private val outer: () -> JScrollPane?) : JScrollPane(view) {
+private const val BLANK_FOCUS_HANDLER = "neuoj.blankFocusHandler"
+
+internal fun installBlankClickHandler(component: Component, action: () -> Unit) {
+  if (component is JTextArea || component is JScrollBar) return
+  if (component is JComponent && component.getClientProperty(BLANK_FOCUS_HANDLER) != true) {
+    component.addMouseListener(object : MouseAdapter() {
+      override fun mousePressed(event: MouseEvent) { action() }
+    })
+    component.putClientProperty(BLANK_FOCUS_HANDLER, true)
+  }
+  if (component is Container) component.components.forEach { installBlankClickHandler(it, action) }
+}
+
+internal class ForwardingScrollPane(view: JComponent, private val outer: () -> JScrollPane?,
+  private val editorActive: () -> Boolean = { view.isFocusOwner }) : JScrollPane(view) {
   override fun processMouseWheelEvent(event: MouseWheelEvent) {
     val bar = verticalScrollBar
     val direction = event.preciseWheelRotation
-    val atEdge = bar.maximum <= bar.visibleAmount ||
+    val atEdge = !editorActive() || bar.maximum <= bar.visibleAmount ||
       (direction < 0 && bar.value <= bar.minimum) ||
       (direction > 0 && bar.value >= bar.maximum - bar.visibleAmount)
     if (atEdge) {
@@ -212,6 +232,7 @@ class HelperPanel(private val project: Project) : JPanel(BorderLayout(0, 6)), Di
   private val problemTitle = JLabel("无题目")
   private val cardsPanel = CardsPanel()
   private lateinit var cardsScroll: JScrollPane
+  private var wheelEditor: JTextArea? = null
   private val cards = mutableListOf<SampleCard>()
   private val runState = SampleRunState()
   private val expanded = mutableMapOf<String, Boolean>()
@@ -275,6 +296,7 @@ class HelperPanel(private val project: Project) : JPanel(BorderLayout(0, 6)), Di
     add(scroll, BorderLayout.CENTER)
     service.listeners.add(changed)
     reload(null)
+    installBlankClickHandler(this) { focusOuterCards() }
     ApplicationManager.getApplication().executeOnPooledThread {
       HelperSettings.instance().initializeCompiler()
       IdeBridge.instance().start()
@@ -291,6 +313,11 @@ class HelperPanel(private val project: Project) : JPanel(BorderLayout(0, 6)), Di
     toolTipText = name; accessibleContext.accessibleName = name
     addActionListener { action() }
   }
+  private fun focusOuterCards() {
+    wheelEditor = null
+    if (!cardsPanel.requestFocusInWindow())
+      java.awt.KeyboardFocusManager.getCurrentKeyboardFocusManager().clearGlobalFocusOwner()
+  }
   private fun later(action: () -> Unit) = ApplicationManager.getApplication().invokeLater {
     if (!disposed && !project.isDisposed) action()
   }
@@ -305,6 +332,7 @@ class HelperPanel(private val project: Project) : JPanel(BorderLayout(0, 6)), Di
     selectProblem(id?.let { service.workspace.load(it) } ?: service.workspace.list().firstOrNull())
   }
   private fun selectProblem(value: Problem?) {
+    wheelEditor = null
     if (value?.id != problem?.id) { generation++; cancellation.set(true); runState.clear(); expanded.clear() }
     problem = value
     problemTitle.text = value?.title ?: "无题目"
@@ -321,6 +349,7 @@ class HelperPanel(private val project: Project) : JPanel(BorderLayout(0, 6)), Di
       add(add, BorderLayout.EAST)
     })
     refreshResults()
+    installBlankClickHandler(cardsPanel) { focusOuterCards() }
     cardsPanel.revalidate(); cardsPanel.repaint()
   }
   private fun addSample() {
@@ -395,20 +424,26 @@ class HelperPanel(private val project: Project) : JPanel(BorderLayout(0, 6)), Di
       add(fields, BorderLayout.CENTER)
       if (sample.custom || number == 1) {
         observe(input) { sample.input = input.text; runState.reset(sample.id) }
-        if (sample.custom) observe(expected) { sample.output = expected.text }
+        observe(expected) { sample.output = expected.text }
       }
       fitHeight()
     }
     private fun field(label: String, area: JTextArea): JComponent {
-      area.isEditable = (area === expected && sample.custom) || (area === input && (sample.custom || number == 1))
+      area.isEditable = (area === expected || area === input) && (sample.custom || number == 1)
       area.font = Font(Font.MONOSPACED, Font.PLAIN, 12)
       area.accessibleContext.accessibleName = "TC $number $label"
+      area.addMouseListener(object : MouseAdapter() {
+        override fun mousePressed(event: MouseEvent) { wheelEditor = area }
+      })
+      area.addFocusListener(object : FocusAdapter() {
+        override fun focusGained(event: FocusEvent) { wheelEditor = area }
+      })
       val gutter = if (area === expected || area === actual) LineMarkerGutter(area).also { gutters[area] = it } else null
       return JPanel(BorderLayout(0, 2)).apply {
         alignmentX = LEFT_ALIGNMENT
         maximumSize = Dimension(Int.MAX_VALUE, Int.MAX_VALUE)
         add(JLabel(label), BorderLayout.NORTH)
-        add(ForwardingScrollPane(area) { cardsScroll }.apply {
+        add(ForwardingScrollPane(area, { cardsScroll }) { wheelEditor === area && area.isFocusOwner }.apply {
           preferredSize = Dimension(160, if (area === actual) 80 else 96)
           border = BorderFactory.createLineBorder(UIManager.getColor("Component.borderColor") ?: Color.GRAY, 2)
           if (gutter != null) setRowHeaderView(gutter)
@@ -495,7 +530,7 @@ class HelperPanel(private val project: Project) : JPanel(BorderLayout(0, 6)), Di
     }
     fun setRunning(value: Boolean) {
       input.isEditable = (sample.custom || number == 1) && !value
-      expected.isEditable = sample.custom && !value
+      expected.isEditable = (sample.custom || number == 1) && !value
     }
     fun repaintStatus() { resultLabel.repaint() }
     fun expand() {

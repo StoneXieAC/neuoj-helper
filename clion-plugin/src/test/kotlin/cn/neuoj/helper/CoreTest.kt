@@ -1,5 +1,6 @@
 package cn.neuoj.helper
 
+import com.intellij.util.SVGLoader
 import org.junit.Assert.*
 import org.junit.Assume.assumeFalse
 import org.junit.Test
@@ -7,11 +8,14 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.util.concurrent.atomic.AtomicBoolean
 import java.awt.Dimension
+import java.awt.image.BufferedImage
 import java.awt.event.MouseEvent
 import java.awt.event.MouseWheelEvent
 import javax.swing.JPanel
 import javax.swing.JScrollPane
 import javax.swing.JTextArea
+import javax.swing.JButton
+import javax.swing.JLabel
 
 class CoreTest {
   private fun problem() = Problem(id = "https://oj.neu.edu.cn/problems/83", url = "https://oj.neu.edu.cn/problems/83", title = "测试题目", statement = "题面", samples = mutableListOf(Sample("official-1", "1\n", "1\n")))
@@ -35,6 +39,13 @@ class CoreTest {
     val compiler = ProcessBuilder(javaHome.resolve("javac$binary").toString(), source.toString()).start()
     assertEquals(String(compiler.errorStream.readAllBytes()), 0, compiler.waitFor())
     return listOf(javaHome.resolve("java$binary").toString(), "-cp", root.toString(), "ProcessProbe")
+  }
+  @Test fun pluginLogoLoadsAndPaints() {
+    assertNotNull(javaClass.getResource("/META-INF/pluginIcon.svg"))
+    val image = SVGLoader.load(javaClass.getResource("/META-INF/pluginIcon.svg")!!, 1f) as BufferedImage
+    assertEquals(40, image.width)
+    assertEquals(40, image.height)
+    assertTrue(image.getRGB(20, 20) ushr 24 > 0)
   }
   @Test fun comparison() {
     assertTrue(CompareMode.TOKENS.matches(" 1\t23\n", "1 23"))
@@ -96,11 +107,45 @@ class CoreTest {
   @Test fun wheelOnNonScrollableFieldMovesOuterCards() {
     val longPanel = JPanel().apply { preferredSize = Dimension(100, 1000) }
     val outer = JScrollPane(longPanel).apply { setSize(100, 100); doLayout(); verticalScrollBar.unitIncrement = 18 }
-    val inner = ForwardingScrollPane(JTextArea("短文本")) { outer }.apply { setSize(100, 80); doLayout() }
+    val inner = ForwardingScrollPane(JTextArea("短文本"), { outer }).apply { setSize(100, 80); doLayout() }
     val event = MouseWheelEvent(inner, MouseEvent.MOUSE_WHEEL, System.currentTimeMillis(), 0,
       10, 10, 0, false, MouseWheelEvent.WHEEL_UNIT_SCROLL, 3, 1)
     inner.dispatchEvent(event)
     assertTrue(outer.verticalScrollBar.value > 0)
+  }
+  @Test fun blankClickReleasesEditorWheelControl() {
+    val outer = JScrollPane(JPanel().apply { preferredSize = Dimension(100, 1000) }).apply {
+      setSize(100, 100); doLayout(); verticalScrollBar.unitIncrement = 18
+    }
+    var editorActive = true
+    val area = JTextArea((1..100).joinToString("\n"))
+    val inner = ForwardingScrollPane(area, { outer }) { editorActive }.apply { setSize(100, 80); doLayout() }
+    val blank = JPanel()
+    val label = JLabel("输入")
+    val button = JButton("运行")
+    val root = JPanel().apply { add(blank); add(label); add(button); add(inner) }
+    var blankClicks = 0
+    installBlankClickHandler(root) { editorActive = false; blankClicks++ }
+    fun click(component: java.awt.Component) = component.dispatchEvent(MouseEvent(component,
+      MouseEvent.MOUSE_PRESSED, System.currentTimeMillis(), 0, 2, 2, 1, false))
+    fun wheel() = inner.dispatchEvent(MouseWheelEvent(inner, MouseEvent.MOUSE_WHEEL,
+      System.currentTimeMillis(), 0, 10, 10, 0, false, MouseWheelEvent.WHEEL_UNIT_SCROLL, 3, 1))
+    click(area)
+    assertTrue(editorActive)
+    wheel()
+    assertTrue(inner.verticalScrollBar.value > 0)
+    assertEquals(0, outer.verticalScrollBar.value)
+    val innerPosition = inner.verticalScrollBar.value
+    click(blank)
+    assertFalse(editorActive)
+    wheel()
+    assertEquals(innerPosition, inner.verticalScrollBar.value)
+    assertTrue(outer.verticalScrollBar.value > 0)
+    click(label); click(button)
+    assertEquals(3, blankClicks)
+    installBlankClickHandler(root) { blankClicks++ }
+    click(blank)
+    assertEquals(4, blankClicks)
   }
   @Test fun protocol() {
     val p = problem(); Protocol.validate(p)
@@ -158,6 +203,12 @@ class CoreTest {
       assertEquals(SamplePhase.RUNNING, states.phase(first.id))
       states.complete(first.id, passed)
       assertEquals(SamplePhase.FINISHED, states.phase(first.id))
+      assertTrue(CompareMode.EXACT.matches(passed.stdout, first.output))
+      first.output = "edited expected\n"
+      workspace.save(imported)
+      assertEquals("edited expected\n", workspace.load(original.id)!!.samples.first().output)
+      assertFalse(CompareMode.EXACT.matches(passed.stdout, first.output))
+      assertSame(passed, states.results[first.id])
       val copy = first.copy(id = "custom-1", custom = true, originalInput = null)
       imported.samples.add(copy)
       imported.samples.add(Sample("custom-2", "", "", true))
