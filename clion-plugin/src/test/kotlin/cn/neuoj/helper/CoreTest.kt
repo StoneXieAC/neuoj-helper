@@ -3,10 +3,13 @@ package cn.neuoj.helper
 import com.intellij.util.SVGLoader
 import org.junit.Assert.*
 import org.junit.Assume.assumeFalse
+import org.junit.Assume.assumeTrue
 import org.junit.Test
 import java.nio.file.Files
 import java.nio.file.Path
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 import java.awt.Dimension
 import java.awt.image.BufferedImage
 import java.awt.event.MouseEvent
@@ -406,6 +409,155 @@ class CoreTest {
       val thread = Thread { Thread.sleep(100); cancel.set(true) }.apply { start() }
       assertEquals("已取消", Processes.execute(probe + listOf("sleep", "5000"), root, timeoutMs = 2000, cancelled = cancel).failure)
       thread.join()
+    } finally { root.toFile().deleteRecursively() }
+  }
+  @Test fun runTimeLabelsDistinguishCpuAndWallTime() {
+    val result = ProcessResult("", "", 0, 490, cpuTimeMicros = 12_999)
+    assertEquals("用时 12 ms", formatRunTime(result, macOs = true))
+    assertEquals("运行耗时（墙上时间）490 ms", formatRunTime(result, macOs = false))
+    assertEquals("用时 <1 ms", formatRunTime(result.copy(cpuTimeMicros = 999), macOs = true))
+    assertEquals("用时不可用", formatRunTime(result.copy(cpuTimeMicros = null), macOs = true))
+  }
+  @Test fun macCpuTimerRejectsMissingAndInvalidMetadata() {
+    val root = Files.createTempDirectory("neuoj-time-metadata-")
+    try {
+      val metadata = root.resolve("result")
+      assertNull(MacCpuTimer.read(metadata))
+      Files.writeString(metadata, "broken")
+      assertNull(MacCpuTimer.read(metadata))
+      Files.writeString(metadata, "neuoj-time-v2\nexit=0\ncpu_us=-1\nwall_us=1\n")
+      assertNull(MacCpuTimer.read(metadata))
+      Files.writeString(metadata, "neuoj-time-v2\nexit=7\ncpu_us=1234\nwall_us=5000\n")
+      assertEquals(MacCpuTimer.Measurement(7, 1234, 5000, null), MacCpuTimer.read(metadata))
+      Files.writeString(metadata, "neuoj-time-v2\ntimeout=137\ncpu_us=1234\nwall_us=30000\n")
+      assertEquals(MacCpuTimer.Measurement(137, 1234, 30000, null, timedOut = true), MacCpuTimer.read(metadata))
+    } finally { root.toFile().deleteRecursively() }
+  }
+  @Test fun macCpuTimingCoversExecutionAndFailures() {
+    assumeTrue(isMacOs())
+    val root = Files.createTempDirectory("neuoj-mac-time-")
+    try {
+      val source = root.resolve("probe.c")
+      val binary = root.resolve("probe")
+      Files.writeString(source, """
+        #include <stdio.h>
+        #include <stdlib.h>
+        #include <signal.h>
+        #include <unistd.h>
+        int main(int argc, char **argv) {
+          if (argc > 1 && argv[1][0] == 's') { usleep(180000); return 0; }
+          if (argc > 1 && argv[1][0] == 'b') {
+            volatile unsigned long value = 0;
+            for (unsigned long i = 0; i < 30000000; ++i) value += i;
+            return value == 0;
+          }
+          if (argc > 1 && argv[1][0] == 'e') { fputs("diagnostic", stderr); return 7; }
+          if (argc > 1 && argv[1][0] == 't') { raise(SIGTERM); return 0; }
+          if (argc > 1 && argv[1][0] == 'o') { for (int i = 0; i < 2000; ++i) puts("overflow"); return 0; }
+          char line[128];
+          if (fgets(line, sizeof line, stdin)) fputs(line, stdout);
+          return 0;
+        }
+      """.trimIndent())
+      val compile = ProcessBuilder("clang", "-O0", source.toString(), "-o", binary.toString()).start()
+      assertEquals(String(compile.errorStream.readAllBytes()), 0, compile.waitFor())
+      repeat(10) {
+        val hello = Processes.execute(listOf(binary.toString()), root, "hello\n", 5000, AtomicBoolean(), measureCpu = true)
+        assertNull(hello.failure)
+        assertEquals(0, hello.exitCode)
+        assertEquals("hello\n", hello.stdout)
+        assertNotNull(hello.cpuTimeMicros)
+        assertTrue(hello.cpuTimeMicros!! < 100_000)
+      }
+      val sleeping = Processes.execute(listOf(binary.toString(), "sleep"), root, timeoutMs = 5000,
+        cancelled = AtomicBoolean(), measureCpu = true)
+      assertNull(sleeping.failure)
+      assertTrue(sleeping.elapsedMs >= 150)
+      assertTrue(sleeping.sampleWallTimeMicros!! >= 150_000)
+      val sleepingCpu = sleeping.cpuTimeMicros!!
+      assertTrue(sleepingCpu < 100_000)
+      val busy = Processes.execute(listOf(binary.toString(), "busy"), root, timeoutMs = 5000,
+        cancelled = AtomicBoolean(), measureCpu = true)
+      assertNull(busy.failure)
+      assertTrue(busy.cpuTimeMicros!! > sleepingCpu)
+      val failed = Processes.execute(listOf(binary.toString(), "error"), root, timeoutMs = 5000,
+        cancelled = AtomicBoolean(), measureCpu = true)
+      assertEquals(7, failed.exitCode)
+      assertEquals("diagnostic", failed.stderr)
+      assertNotNull(failed.cpuTimeMicros)
+      val signalled = Processes.execute(listOf(binary.toString(), "terminate"), root, timeoutMs = 5000,
+        cancelled = AtomicBoolean(), measureCpu = true)
+      assertEquals(143, signalled.exitCode)
+      assertNotNull(signalled.cpuTimeMicros)
+      val missing = Processes.execute(listOf(root.resolve("missing").toString()), root, timeoutMs = 5000,
+        cancelled = AtomicBoolean(), measureCpu = true)
+      assertTrue(missing.failure!!.startsWith("无法启动程序"))
+      assertNull(missing.cpuTimeMicros)
+      val timedOut = Processes.execute(listOf(binary.toString(), "sleep"), root, timeoutMs = 30,
+        cancelled = AtomicBoolean(), measureCpu = true)
+      assertEquals("超时", timedOut.failure)
+      assertTrue(timedOut.elapsedMs < 1000)
+      assertEquals("输出超限", Processes.execute(listOf(binary.toString(), "overflow"), root, timeoutMs = 5000,
+        cancelled = AtomicBoolean(), maxBytes = 1024, measureCpu = true).failure)
+      val cancelled = AtomicBoolean()
+      val stopper = Thread { Thread.sleep(30); cancelled.set(true) }.apply { start() }
+      assertEquals("已取消", Processes.execute(listOf(binary.toString(), "sleep"), root, timeoutMs = 5000,
+        cancelled = cancelled, measureCpu = true).failure)
+      stopper.join()
+    } finally { root.toFile().deleteRecursively() }
+  }
+  @Test fun macTimerDoesNotCountDelayedHelperObservationAsTimeout() {
+    assumeTrue(isMacOs())
+    val root = Files.createTempDirectory("neuoj-mac-time-delay-")
+    try {
+      val helper = MacCpuTimer.prepare(root)!!
+      val metadata = root.resolve("delayed.result")
+      val process = ProcessBuilder(helper.toString(), metadata.toString(), "300", "/bin/sh", "-c",
+        "printf r; read line; sleep 0.05").directory(root.toFile()).start()
+      try {
+        assertEquals('r'.code, process.inputStream.read())
+        val stop = ProcessBuilder("/bin/kill", "-STOP", process.pid().toString()).start()
+        assertEquals(0, stop.waitFor())
+        try {
+          process.outputStream.use { it.write("\n".toByteArray()) }
+          Thread.sleep(500)
+        } finally {
+          val resume = ProcessBuilder("/bin/kill", "-CONT", process.pid().toString()).start()
+          assertEquals(0, resume.waitFor())
+        }
+        assertTrue(process.waitFor(2, TimeUnit.SECONDS))
+        assertEquals(0, process.exitValue())
+        val measurement = MacCpuTimer.read(metadata)!!
+        assertFalse(measurement.timedOut)
+        assertTrue(measurement.wallTimeMicros!! < 300_000)
+      } finally {
+        runCatching { process.descendants().use { children -> children.forEach { it.destroyForcibly() } } }
+        if (process.isAlive) process.destroyForcibly()
+        process.waitFor(2, TimeUnit.SECONDS)
+      }
+    } finally { root.toFile().deleteRecursively() }
+  }
+  @Test fun macCancellationStopsTheTimedChild() {
+    assumeTrue(isMacOs())
+    val root = Files.createTempDirectory("neuoj-mac-cancel-")
+    try {
+      val cancelled = AtomicBoolean()
+      val result = AtomicReference<ProcessResult>()
+      val worker = Thread {
+        result.set(Processes.execute(listOf("/bin/sh", "-c", "echo $$ > child.pid; sleep 5"), root,
+          timeoutMs = 5000, cancelled = cancelled, measureCpu = true))
+      }.apply { start() }
+      val pidFile = root.resolve("child.pid")
+      val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2)
+      while (!Files.exists(pidFile) && System.nanoTime() < deadline) Thread.sleep(10)
+      assertTrue(Files.exists(pidFile))
+      val childPid = Files.readString(pidFile).trim()
+      cancelled.set(true)
+      worker.join(2000)
+      assertFalse(worker.isAlive)
+      assertEquals("已取消", result.get().failure)
+      val check = ProcessBuilder("/bin/kill", "-0", childPid).start()
+      assertTrue(check.waitFor() != 0)
     } finally { root.toFile().deleteRecursively() }
   }
   @Test fun realGnuCompiler() {

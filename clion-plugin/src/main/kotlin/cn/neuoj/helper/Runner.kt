@@ -1,19 +1,80 @@
 package cn.neuoj.helper
 
 import java.io.ByteArrayOutputStream
+import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.Path
+import java.util.UUID
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.concurrent.thread
 
-data class ProcessResult(val stdout: String, val stderr: String, val exitCode: Int, val elapsedMs: Long, val failure: String? = null)
+data class ProcessResult(val stdout: String, val stderr: String, val exitCode: Int, val elapsedMs: Long,
+  val failure: String? = null, val cpuTimeMicros: Long? = null, val sampleWallTimeMicros: Long? = null)
+
+internal fun isMacOs() = System.getProperty("os.name").startsWith("Mac", ignoreCase = true)
+
+internal object MacCpuTimer {
+  data class Measurement(val exitCode: Int?, val cpuTimeMicros: Long?, val wallTimeMicros: Long?,
+    val spawnError: Int?, val timedOut: Boolean = false)
+
+  fun prepare(cwd: Path): Path? {
+    val resource = MacCpuTimer::class.java.getResourceAsStream("/native/macos/neuoj-time") ?: return null
+    var binary: Path? = null
+    return try {
+      resource.use {
+        binary = Files.createTempFile(cwd, "neuoj-time-", "")
+        Files.copy(it, binary!!, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+      }
+      if (!binary!!.toFile().setExecutable(true, true)) throw IOException("无法运行计时辅助程序")
+      binary
+    } catch (_: Exception) {
+      binary?.let { runCatching { Files.deleteIfExists(it) } }
+      null
+    }
+  }
+
+  fun read(path: Path): Measurement? = runCatching {
+    if (Files.size(path) > 128) return null
+    val lines = Files.readAllLines(path, Charsets.US_ASCII)
+    if (lines.size != 4 || lines[0] != "neuoj-time-v2") return null
+    val state = lines[1].substringBefore('=')
+    val value = lines[1].substringAfter('=', "").toIntOrNull() ?: return null
+    val cpu = lines[2].removePrefix("cpu_us=").takeIf { lines[2].startsWith("cpu_us=") }?.toLongOrNull() ?: return null
+    val wall = lines[3].removePrefix("wall_us=").takeIf { lines[3].startsWith("wall_us=") }?.toLongOrNull() ?: return null
+    if (value < 0 || cpu < 0 || wall < 0) return null
+    when (state) {
+      "exit" -> if (value <= 255) Measurement(value, cpu, wall, null) else null
+      "signal" -> if (value in 1..127) Measurement(128 + value, cpu, wall, null) else null
+      "timeout" -> if (value <= 255) Measurement(value, cpu, wall, null, timedOut = true) else null
+      "spawn_error" -> Measurement(null, null, null, value)
+      else -> null
+    }
+  }.getOrNull()
+}
+
+fun formatRunTime(result: ProcessResult, macOs: Boolean = isMacOs()): String {
+  if (macOs) {
+    val cpu = result.cpuTimeMicros ?: return "用时不可用"
+    return "用时 ${if (cpu < 1000) "<1" else (cpu / 1000).toString()} ms"
+  }
+  return "运行耗时（墙上时间）${if (result.elapsedMs == 0L) "<1" else result.elapsedMs.toString()} ms"
+}
 
 object Processes {
-  fun execute(args: List<String>, cwd: Path, input: String = "", timeoutMs: Long, cancelled: AtomicBoolean, maxBytes: Long = 1_048_576): ProcessResult {
+  fun execute(args: List<String>, cwd: Path, input: String = "", timeoutMs: Long, cancelled: AtomicBoolean,
+    maxBytes: Long = 1_048_576, measureCpu: Boolean = false): ProcessResult {
     if (cancelled.get()) return ProcessResult("", "", -1, 0, "已取消")
-    val process = ProcessBuilder(args).directory(cwd.toFile()).start()
+    val helper = if (measureCpu && isMacOs()) MacCpuTimer.prepare(cwd) else null
+    val metadata = helper?.let { cwd.resolve("neuoj-time-${UUID.randomUUID()}.result") }
+    val command = if (helper != null) listOf(helper.toString(), metadata.toString(), timeoutMs.toString()) + args else args
+    val process = try { ProcessBuilder(command).directory(cwd.toFile()).start() }
+    catch (error: IOException) {
+      if (helper == null) throw error
+      runCatching { Files.deleteIfExists(helper) }
+      return execute(args, cwd, input, timeoutMs, cancelled, maxBytes)
+    }
     val started = System.nanoTime()
     val size = AtomicLong()
     val exceeded = AtomicBoolean()
@@ -43,21 +104,22 @@ object Processes {
       if (process.waitFor(10, TimeUnit.MILLISECONDS)) {
         val observedAt = System.nanoTime()
         finishedAt = observedAt
-        if (timedOut(observedAt)) failure = "超时"
+        if (helper == null && timedOut(observedAt)) failure = "超时"
         break
       }
       runCatching { process.descendants().use { stream -> stream.forEach { children[it.pid()] = it } } }
       if (process.waitFor(0, TimeUnit.MILLISECONDS)) {
         val observedAt = System.nanoTime()
         finishedAt = observedAt
-        if (timedOut(observedAt)) failure = "超时"
+        if (helper == null && timedOut(observedAt)) failure = "超时"
         break
       }
       val checkedAt = System.nanoTime()
       failure = when {
         cancelled.get() -> "已取消"
         exceeded.get() -> "输出超限"
-        timedOut(checkedAt) -> "超时"
+        helper == null && timedOut(checkedAt) -> "超时"
+        helper != null && checkedAt - started >= TimeUnit.MILLISECONDS.toNanos(timeoutMs + 2000) -> "计时失败"
         else -> null
       }
       if (failure != null) {
@@ -70,13 +132,30 @@ object Processes {
     // 子进程可能继承管道；结束时一并清理，避免孤儿进程或阻塞读取。
     runCatching { process.descendants().use { descendants -> descendants.toList().asReversed().forEach { it.destroyForcibly() } } }
     children.values.toList().asReversed().forEach { if (it.isAlive) it.destroyForcibly() }
-    if (process.isAlive) process.destroyForcibly()
+    if (process.isAlive) {
+      if (helper != null) {
+        process.destroy()
+        if (!process.waitFor(200, TimeUnit.MILLISECONDS)) process.destroyForcibly()
+      } else process.destroyForcibly()
+    }
     process.waitFor(2, TimeUnit.SECONDS)
     writer.join(1000); stdout.join(1000); stderr.join(1000)
     process.inputStream.close(); process.errorStream.close()
     if (exceeded.get() && failure == null) failure = "输出超限"
-    return ProcessResult(out.toString(Charsets.UTF_8), err.toString(Charsets.UTF_8), if (process.isAlive) -1 else process.exitValue(),
-      (endedAt - started) / 1_000_000, failure)
+    val measurement = metadata?.let { MacCpuTimer.read(it) }
+    if (helper != null) runCatching { Files.deleteIfExists(helper) }
+    if (metadata != null) runCatching { Files.deleteIfExists(metadata) }
+    if (helper != null && failure == null) {
+      failure = when {
+        measurement == null -> "计时失败"
+        measurement.spawnError != null -> "无法启动程序（系统错误码 ${measurement.spawnError}）"
+        measurement.timedOut -> "超时"
+        else -> null
+      }
+    }
+    return ProcessResult(out.toString(Charsets.UTF_8), err.toString(Charsets.UTF_8),
+      measurement?.exitCode ?: if (process.isAlive) -1 else process.exitValue(),
+      (endedAt - started) / 1_000_000, failure, measurement?.cpuTimeMicros, measurement?.wallTimeMicros)
   }
 }
 
@@ -172,7 +251,8 @@ class Runner {
       for (sample in problem.samples) {
         if (cancelled.get()) break
         onRunning(sample.id)
-        val result = TestResult(sample.id, Processes.execute(listOf(binary.toString()), temp, sample.input, problem.timeLimitMs ?: 2000, cancelled))
+        val result = TestResult(sample.id, Processes.execute(listOf(binary.toString()), temp, sample.input,
+          problem.timeLimitMs ?: 2000, cancelled, measureCpu = isMacOs()))
         results.add(result)
         onCompleted(result)
       }

@@ -26,7 +26,21 @@ jobs:
           distribution: temurin
           java-version: '21'
       - uses: gradle/actions/setup-gradle@v6
+      - name: 检查 macOS 计时程序架构
+        if: runner.os == 'macOS'
+        run: |
+          clang -fsyntax-only -Wall -Wextra -Werror clion-plugin/native/macos/neuoj-time.c
+          archs="$(lipo -archs clion-plugin/src/main/resources/native/macos/neuoj-time)"
+          case " $archs " in *" arm64 "*) ;; *) exit 1 ;; esac
+          case " $archs " in *" x86_64 "*) ;; *) exit 1 ;; esac
       - name: 测试并构建插件
         shell: bash
         working-directory: clion-plugin
         run: ./gradlew test buildPlugin
+      - name: 检查插件包包含计时程序
+        shell: bash
+        working-directory: clion-plugin
+        run: |
+          plugin_jar="$(find build/libs -maxdepth 1 -name '*.jar' ! -name '*-base.jar' ! -name '*-searchableOptions.jar' -print -quit)"
+          test -n "$plugin_jar"
+          jar tf "$plugin_jar" | grep -Fx native/macos/neuoj-time

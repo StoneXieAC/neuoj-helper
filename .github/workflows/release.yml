@@ -52,6 +52,12 @@ jobs:
       - name: 测试并构建 CLion 插件
         working-directory: clion-plugin
         run: ./gradlew test buildPlugin
+      - name: 检查发布包包含 macOS 计时程序
+        working-directory: clion-plugin
+        run: |
+          plugin_jar="$(find build/libs -maxdepth 1 -name '*.jar' ! -name '*-base.jar' ! -name '*-searchableOptions.jar' -print -quit)"
+          test -n "$plugin_jar"
+          jar tf "$plugin_jar" | grep -Fx native/macos/neuoj-time
       - name: 保存 CLion 插件包
         uses: actions/upload-artifact@v7
         with:

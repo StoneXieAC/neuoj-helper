@@ -547,7 +547,7 @@ class HelperPanel(private val project: Project) : JPanel(BorderLayout(0, 6)), Di
       compileDiagnostic.text = ""
       actualField.isVisible = true; diagnosticField.isVisible = false
       stderrField.isVisible = result.stderr.isNotBlank()
-      runInfo.text = "运行耗时 ${if (result.elapsedMs == 0L) "<1" else result.elapsedMs.toString()} ms · 退出码 ${result.exitCode}"
+      runInfo.text = "${formatRunTime(result)} · 退出码 ${result.exitCode}"
       runInfo.isVisible = true
       val comparison = OutputComparison.compare(sample.output, result.stdout, mode)
       markLines(expected, comparison.expected); markLines(actual, comparison.actual)
