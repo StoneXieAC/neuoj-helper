@@ -33,14 +33,26 @@ jobs:
           archs="$(lipo -archs clion-plugin/src/main/resources/native/macos/neuoj-time)"
           case " $archs " in *" arm64 "*) ;; *) exit 1 ;; esac
           case " $archs " in *" x86_64 "*) ;; *) exit 1 ;; esac
+      - name: 检查 Linux 和 Windows 原生计时程序可重建
+        if: runner.os == 'Linux'
+        run: |
+          curl -fL --retry 3 https://ziglang.org/download/0.14.1/zig-x86_64-linux-0.14.1.tar.xz -o "$RUNNER_TEMP/zig.tar.xz"
+          echo '24aeeec8af16c381934a6cd7d95c807a8cb2cf7df9fa40d359aa884195c4716c  '"$RUNNER_TEMP/zig.tar.xz" | sha256sum -c -
+          tar -xf "$RUNNER_TEMP/zig.tar.xz" -C "$RUNNER_TEMP"
+          export ZIG="$RUNNER_TEMP/zig-x86_64-linux-0.14.1/zig"
+          sh clion-plugin/native/linux/build.sh
+          sh clion-plugin/native/windows/build.sh
+          git diff --exit-code -- clion-plugin/src/main/resources/native/linux-x64 clion-plugin/src/main/resources/native/windows-x64
       - name: 测试并构建插件
         shell: bash
         working-directory: clion-plugin
         run: ./gradlew test buildPlugin
-      - name: 检查插件包包含计时程序
+      - name: 检查插件包包含三个平台的计时程序
         shell: bash
         working-directory: clion-plugin
         run: |
           plugin_jar="$(find build/libs -maxdepth 1 -name '*.jar' ! -name '*-base.jar' ! -name '*-searchableOptions.jar' -print -quit)"
           test -n "$plugin_jar"
           jar tf "$plugin_jar" | grep -Fx native/macos/neuoj-time
+          jar tf "$plugin_jar" | grep -Fx native/linux-x64/neuoj-time
+          jar tf "$plugin_jar" | grep -Fx native/windows-x64/neuoj-time.exe

@@ -13,21 +13,30 @@ import kotlin.concurrent.thread
 data class ProcessResult(val stdout: String, val stderr: String, val exitCode: Int, val elapsedMs: Long,
   val failure: String? = null, val cpuTimeMicros: Long? = null, val sampleWallTimeMicros: Long? = null)
 
-internal fun isMacOs() = System.getProperty("os.name").startsWith("Mac", ignoreCase = true)
-
-internal object MacCpuTimer {
+internal object NativeCpuTimer {
   data class Measurement(val exitCode: Int?, val cpuTimeMicros: Long?, val wallTimeMicros: Long?,
     val spawnError: Int?, val timedOut: Boolean = false)
 
-  fun prepare(cwd: Path): Path? {
-    val resource = MacCpuTimer::class.java.getResourceAsStream("/native/macos/neuoj-time") ?: return null
+  internal fun resourcePath(os: String = System.getProperty("os.name"), arch: String = System.getProperty("os.arch")): String? {
+    if (os.startsWith("Mac", ignoreCase = true)) return "/native/macos/neuoj-time"
+    if (arch != "amd64" && arch != "x86_64") return null
+    return when {
+      os.startsWith("Linux", ignoreCase = true) -> "/native/linux-x64/neuoj-time"
+      os.startsWith("Windows", ignoreCase = true) -> "/native/windows-x64/neuoj-time.exe"
+      else -> null
+    }
+  }
+
+  fun prepare(cwd: Path, path: String? = resourcePath()): Path? {
+    if (path == null) return null
+    val resource = NativeCpuTimer::class.java.getResourceAsStream(path) ?: return null
     var binary: Path? = null
     return try {
       resource.use {
-        binary = Files.createTempFile(cwd, "neuoj-time-", "")
+        binary = Files.createTempFile(cwd, "neuoj-time-", if (path.endsWith(".exe")) ".exe" else "")
         Files.copy(it, binary!!, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
       }
-      if (!binary!!.toFile().setExecutable(true, true)) throw IOException("无法运行计时辅助程序")
+      if (!path.endsWith(".exe") && !binary!!.toFile().setExecutable(true, true)) throw IOException("无法运行计时辅助程序")
       binary
     } catch (_: Exception) {
       binary?.let { runCatching { Files.deleteIfExists(it) } }
@@ -40,33 +49,30 @@ internal object MacCpuTimer {
     val lines = Files.readAllLines(path, Charsets.US_ASCII)
     if (lines.size != 4 || lines[0] != "neuoj-time-v2") return null
     val state = lines[1].substringBefore('=')
-    val value = lines[1].substringAfter('=', "").toIntOrNull() ?: return null
+    val value = lines[1].substringAfter('=', "").toLongOrNull() ?: return null
     val cpu = lines[2].removePrefix("cpu_us=").takeIf { lines[2].startsWith("cpu_us=") }?.toLongOrNull() ?: return null
     val wall = lines[3].removePrefix("wall_us=").takeIf { lines[3].startsWith("wall_us=") }?.toLongOrNull() ?: return null
     if (value < 0 || cpu < 0 || wall < 0) return null
     when (state) {
-      "exit" -> if (value <= 255) Measurement(value, cpu, wall, null) else null
-      "signal" -> if (value in 1..127) Measurement(128 + value, cpu, wall, null) else null
-      "timeout" -> if (value <= 255) Measurement(value, cpu, wall, null, timedOut = true) else null
-      "spawn_error" -> Measurement(null, null, null, value)
+      "exit" -> if (value <= 0xffffffffL) Measurement(value.toInt(), cpu, wall, null) else null
+      "signal" -> if (value in 1..127) Measurement((128 + value).toInt(), cpu, wall, null) else null
+      "timeout" -> if (value <= 0xffffffffL) Measurement(value.toInt(), cpu, wall, null, timedOut = true) else null
+      "spawn_error" -> if (value <= Int.MAX_VALUE) Measurement(null, null, null, value.toInt()) else null
       else -> null
     }
   }.getOrNull()
 }
 
-fun formatRunTime(result: ProcessResult, macOs: Boolean = isMacOs()): String {
-  if (macOs) {
-    val cpu = result.cpuTimeMicros ?: return "用时不可用"
-    return "用时 ${if (cpu < 1000) "<1" else (cpu / 1000).toString()} ms"
-  }
-  return "运行耗时（墙上时间）${if (result.elapsedMs == 0L) "<1" else result.elapsedMs.toString()} ms"
+fun formatRunTime(result: ProcessResult): String {
+  val cpu = result.cpuTimeMicros ?: return "用时不可用"
+  return "用时 ${if (cpu < 1000) "<1" else (cpu / 1000).toString()} ms"
 }
 
 object Processes {
   fun execute(args: List<String>, cwd: Path, input: String = "", timeoutMs: Long, cancelled: AtomicBoolean,
     maxBytes: Long = 1_048_576, measureCpu: Boolean = false): ProcessResult {
     if (cancelled.get()) return ProcessResult("", "", -1, 0, "已取消")
-    val helper = if (measureCpu && isMacOs()) MacCpuTimer.prepare(cwd) else null
+    val helper = if (measureCpu) NativeCpuTimer.prepare(cwd) else null
     val metadata = helper?.let { cwd.resolve("neuoj-time-${UUID.randomUUID()}.result") }
     val command = if (helper != null) listOf(helper.toString(), metadata.toString(), timeoutMs.toString()) + args else args
     val process = try { ProcessBuilder(command).directory(cwd.toFile()).start() }
@@ -142,7 +148,7 @@ object Processes {
     writer.join(1000); stdout.join(1000); stderr.join(1000)
     process.inputStream.close(); process.errorStream.close()
     if (exceeded.get() && failure == null) failure = "输出超限"
-    val measurement = metadata?.let { MacCpuTimer.read(it) }
+    val measurement = metadata?.let { NativeCpuTimer.read(it) }
     if (helper != null) runCatching { Files.deleteIfExists(helper) }
     if (metadata != null) runCatching { Files.deleteIfExists(metadata) }
     if (helper != null && failure == null) {
@@ -252,7 +258,7 @@ class Runner {
         if (cancelled.get()) break
         onRunning(sample.id)
         val result = TestResult(sample.id, Processes.execute(listOf(binary.toString()), temp, sample.input,
-          problem.timeLimitMs ?: 2000, cancelled, measureCpu = isMacOs()))
+          problem.timeLimitMs ?: 2000, cancelled, measureCpu = true))
         results.add(result)
         onCompleted(result)
       }
