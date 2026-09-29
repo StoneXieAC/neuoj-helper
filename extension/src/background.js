@@ -11,10 +11,15 @@ const MAX_RESULTS = 10;
 const VPN_PREFIX = '/https/62304135386136393339346365373340bfebea318fd008d8f60d257088';
 const BRIDGE_TOKEN_KEY = 'ideBridgeToken';
 const BRIDGE_TABS_KEY = 'ideBridgeTabs';
+const BRIDGE_ENDPOINT_KEY = 'ideBridgeEndpoint';
+const BRIDGE_PORTS = Array.from({ length: 10 }, (_, index) => 39271 + index);
+const BRIDGE_INSTANCE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 let systemPromptPromise;
 let optionsOpening;
 let cacheWrite = Promise.resolve();
 let bridgeLoop;
+let bridgeGeneration = 0;
+let bridgePollController;
 
 function allowedBaseUrl(value) {
   try {
@@ -494,6 +499,54 @@ async function bridgeToken(create = false) {
   return token;
 }
 
+function validBridgeCapabilities(value) {
+  return value?.service === 'neuoj-ide-bridge' && value.protocolVersion === 1 && value.ide === 'CLion' &&
+    BRIDGE_INSTANCE_ID.test(value.instanceId || '') &&
+    Array.isArray(value.capabilities) && value.capabilities.includes('importProblem') &&
+    value.capabilities.includes('submitCode');
+}
+
+function bridgeUrl(port, path) { return `http://127.0.0.1:${port}/v1/${path}`; }
+
+async function bridgeCapabilities(port, timeout = 1500) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeout);
+  try {
+    const response = await fetch(bridgeUrl(port, 'capabilities'), {
+      signal: controller.signal, credentials: 'omit', redirect: 'error'
+    });
+    if (!response.ok) return null;
+    return await response.json();
+  } catch { return null; }
+  finally { clearTimeout(timer); }
+}
+
+async function discoverBridge() {
+  const responses = await Promise.all(BRIDGE_PORTS.map(async port => ({ port, value: await bridgeCapabilities(port) })));
+  const matches = responses.filter(({ value }) => validBridgeCapabilities(value));
+  if (matches.length > 1) throw new Error('发现多个 CLion 实例，请只保留目标 CLion 运行后重试。');
+  if (!matches.length) {
+    if (responses.some(({ value }) => value?.service === 'neuoj-ide-bridge')) {
+      throw new Error('CLion 插件协议不兼容，请同时更新浏览器扩展和 CLion 插件。');
+    }
+    throw new Error('无法连接 CLion，请确认插件已启动且本机端口 39271–39280 未全部占用。');
+  }
+  return { port: matches[0].port, instanceId: matches[0].value.instanceId };
+}
+
+async function storedBridgeEndpoint() {
+  const saved = await chrome.storage.session.get(BRIDGE_ENDPOINT_KEY);
+  const endpoint = saved[BRIDGE_ENDPOINT_KEY];
+  return BRIDGE_PORTS.includes(endpoint?.port) && BRIDGE_INSTANCE_ID.test(endpoint.instanceId || '')
+    ? endpoint : null;
+}
+
+async function bridgeEndpointState(endpoint) {
+  const capabilities = await bridgeCapabilities(endpoint.port);
+  if (!validBridgeCapabilities(capabilities)) return 'unavailable';
+  return capabilities.instanceId === endpoint.instanceId ? 'connected' : 'changed';
+}
+
 async function rememberBridgeTab(sender) {
   const scope = ideScope(sender?.url);
   const tabId = sender?.tab?.id;
@@ -505,8 +558,8 @@ async function rememberBridgeTab(sender) {
   await storage.set({ [BRIDGE_TABS_KEY]: [{ tabId, scope }, ...tabs.filter(item => item.tabId !== tabId)].slice(0, 20) });
 }
 
-async function postBridgeResult(token, result) {
-  const response = await fetch('http://127.0.0.1:27121/v1/submissions/results', {
+async function postBridgeResult(endpoint, token, result) {
+  const response = await fetch(bridgeUrl(endpoint.port, 'submissions/results'), {
     method: 'POST', headers: { 'Content-Type': 'application/json', 'X-NEUOJ-Pair': token },
     body: JSON.stringify(result), credentials: 'omit', redirect: 'error'
   });
@@ -536,35 +589,59 @@ async function dispatchSubmission(job) {
   return { id: job.id, ok: false, error: '请在 NEUOJ 提交记录中核对提交结果。' };
 }
 
-async function pollBridge(token) {
+async function pollBridge(endpoint, token, generation = bridgeGeneration) {
   const controller = new AbortController();
+  bridgePollController = controller;
   const timer = setTimeout(() => controller.abort(), 25000);
   try {
-    const response = await fetch('http://127.0.0.1:27121/v1/submissions/next', {
+    const response = await fetch(bridgeUrl(endpoint.port, 'submissions/next'), {
       headers: { 'X-NEUOJ-Pair': token }, signal: controller.signal, credentials: 'omit', redirect: 'error'
     });
-    if (response.status === 204) return;
+    if (controller.signal.aborted || generation !== bridgeGeneration) return false;
+    if (response.status === 204) return false;
     if (!response.ok) throw new Error(`IDE 连接失败（${response.status}）。`);
     const job = await response.json();
+    if (controller.signal.aborted || generation !== bridgeGeneration) return false;
     const result = await dispatchSubmission(job);
-    await postBridgeResult(token, result);
-  } finally { clearTimeout(timer); }
+    await postBridgeResult(endpoint, token, result);
+    return true;
+  } finally { clearTimeout(timer); if (bridgePollController === controller) bridgePollController = null; }
 }
 
 function startBridge() {
   if (bridgeLoop) return bridgeLoop;
+  const generation = bridgeGeneration;
   bridgeLoop = (async () => {
     const token = await bridgeToken();
-    if (!token) return;
+    const endpoint = await storedBridgeEndpoint();
+    if (!token || !endpoint) return;
     let failures = 0;
-    while (true) {
-      try { await pollBridge(token); failures = 0; }
+    while (generation === bridgeGeneration) {
+      const state = await bridgeEndpointState(endpoint);
+      if (state === 'changed') {
+        console.warn('CLion 实例已变化，请重新导入题目完成配对。');
+        return;
+      }
+      if (state === 'unavailable') {
+        if (++failures >= 2) return;
+        await new Promise(resolve => setTimeout(resolve, 3000));
+        continue;
+      }
+      try {
+        const received = await pollBridge(endpoint, token, generation);
+        failures = 0;
+        if (!received) await new Promise(resolve => setTimeout(resolve, 1000));
+      }
       catch {
+        if (generation !== bridgeGeneration) return;
         if (++failures >= 2) return;
         await new Promise(resolve => setTimeout(resolve, 3000));
       }
     }
-  })().finally(() => { bridgeLoop = null; });
+  })().finally(() => {
+    bridgeLoop = null;
+    if (generation !== bridgeGeneration) startBridge().catch(console.error);
+  });
   return bridgeLoop;
 }
 
@@ -583,11 +660,12 @@ async function importToIde(problem, sender) {
   }
   const body = JSON.stringify(problem);
   if (body.length > 2 * 1024 * 1024) throw new Error('题目数据过大。');
+  const endpoint = await discoverBridge();
   const token = await bridgeToken(true);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 10000);
   async function request(path, options = {}) {
-    const response = await fetch(`http://127.0.0.1:27121/v1/${path}`, {
+    const response = await fetch(bridgeUrl(endpoint.port, path), {
       ...options, headers: { 'Content-Type': 'application/json', 'X-NEUOJ-Pair': token },
       signal: controller.signal, redirect: 'error', credentials: 'omit'
     });
@@ -596,11 +674,18 @@ async function importToIde(problem, sender) {
     try { return await response.json(); } catch { throw new Error('IDE 返回数据无效。'); }
   }
   try {
-    const capabilities = await request('capabilities');
-    if (capabilities.protocolVersion !== 1 || !capabilities.capabilities?.includes('importProblem') ||
-      !capabilities.capabilities?.includes('submitCode')) throw new Error('IDE 协议版本不兼容。');
+    const capabilities = await bridgeCapabilities(endpoint.port);
+    if (!validBridgeCapabilities(capabilities) || capabilities.instanceId !== endpoint.instanceId) {
+      throw new Error('CLion 实例已变化，请重新点击导入题目。');
+    }
     const result = await request('problems', { method: 'POST', body });
     if (!result.ok) throw new Error('IDE 未能完成导入。');
+    const previous = await storedBridgeEndpoint();
+    await chrome.storage.session.set({ [BRIDGE_ENDPOINT_KEY]: endpoint });
+    if (!previous || previous.port !== endpoint.port || previous.instanceId !== endpoint.instanceId) {
+      bridgeGeneration++;
+      bridgePollController?.abort();
+    }
     await rememberBridgeTab(sender);
     if (chrome.alarms) {
       await chrome.alarms.create('neuoj-bridge', { periodInMinutes: 1 });

@@ -4,6 +4,8 @@ import com.google.gson.Gson
 import org.junit.Assert.*
 import org.junit.Test
 import java.net.URI
+import java.net.InetAddress
+import java.net.ServerSocket
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
@@ -35,6 +37,14 @@ class EndpointTest {
         assertEquals(200, request("capabilities", origin = "chrome-extension://abcdef").statusCode())
         assertEquals(200, request("capabilities").statusCode())
         assertTrue(request("capabilities").body().contains("importProblem"))
+        val capabilities = com.google.gson.JsonParser.parseString(request("capabilities").body()).asJsonObject
+        assertEquals("neuoj-ide-bridge", capabilities.get("service").asString)
+        assertEquals(endpoint.instanceId, capabilities.get("instanceId").asString)
+        java.net.Socket("127.0.0.1", endpoint.port).use { socket ->
+          socket.getOutputStream().write("GET /v1/capabilities HTTP/1.1\r\nHost: 127.0.0.1:27121\r\nConnection: close\r\n\r\n".toByteArray())
+          val statusLine = socket.getInputStream().bufferedReader().readLine()
+          assertTrue(statusLine.contains("400"))
+        }
         assertEquals(404, request("missing").statusCode())
         assertEquals(400, request("problems", "null").statusCode())
         assertEquals(400, request("problems", "{").statusCode())
@@ -60,5 +70,30 @@ class EndpointTest {
         assertEquals(400, request("capabilities?q=1").statusCode())
       }
     } finally { root.toFile().deleteRecursively() }
+  }
+
+  @Test fun selectsFirstFreePortAndReportsExhaustion() {
+    val address = InetAddress.getByName("127.0.0.1")
+    val preferred = ServerSocket(0, 1, address).use { it.localPort }
+    startLocalEndpoint(preferred..preferred) { _, _ -> }.use { endpoint ->
+      assertEquals(preferred, endpoint.port)
+      assertThrows(PortRangeExhaustedException::class.java) {
+        startLocalEndpoint(preferred..preferred) { _, _ -> }
+      }
+    }
+    val occupied = ServerSocket(0, 1, address)
+    try {
+      val next = occupied.localPort + 1
+      if (next <= 65535) {
+        startLocalEndpoint(occupied.localPort..next) { _, _ -> }.use { endpoint ->
+          assertEquals(next, endpoint.port)
+          val client = HttpClient.newHttpClient()
+          val response = client.send(HttpRequest.newBuilder(URI("http://127.0.0.1:$next/v1/capabilities")).build(),
+            HttpResponse.BodyHandlers.ofString())
+          assertEquals(200, response.statusCode())
+          assertTrue(response.body().contains("neuoj-ide-bridge"))
+        }
+      }
+    } finally { occupied.close() }
   }
 }

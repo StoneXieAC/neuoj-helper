@@ -311,8 +311,13 @@ class HelperPanel(private val project: Project) : JPanel(BorderLayout(0, 6)), Di
     installBlankClickHandler(this) { focusOuterCards() }
     ApplicationManager.getApplication().executeOnPooledThread {
       HelperSettings.instance().initializeCompiler()
-      IdeBridge.instance().start()
+      val bridge = IdeBridge.instance()
+      bridge.start()
       later {
+        if (!bridge.running) {
+          updateStatus(bridge.status, true)
+          showConnectionError(bridge.status)
+        }
         if (HelperSettings.instance().config.compiler.isBlank()) updateStatus("请选择 C++ 编译器（⚙）")
       }
     }
@@ -342,6 +347,16 @@ class HelperPanel(private val project: Project) : JPanel(BorderLayout(0, 6)), Di
   }
   private fun clearSubmissionBanner() {
     submissionBannerHost.removeAll(); submissionBannerHost.isVisible = false
+    submissionBannerHost.revalidate(); submissionBannerHost.repaint()
+  }
+  private fun showConnectionError(message: String) {
+    val panel = EditorNotificationPanel(EditorNotificationPanel.Status.Error).text(message)
+    panel.setCloseAction { clearSubmissionBanner() }
+    submissionBannerHost.removeAll()
+    submissionBannerHost.add(CardRow(panel) {
+      cardsScroll.verticalScrollBar.width.takeIf { it > 0 } ?: cardsScroll.verticalScrollBar.preferredSize.width
+    }, BorderLayout.CENTER)
+    submissionBannerHost.isVisible = true
     submissionBannerHost.revalidate(); submissionBannerHost.repaint()
   }
   private fun showSubmissionBanner(message: String, actionText: String? = null, actionUrl: String? = null) {

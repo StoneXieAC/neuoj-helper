@@ -39,11 +39,12 @@ class IdeBridge : Disposable {
   @Volatile private var server: LocalEndpoint? = null
   @Volatile var status = "尚未启动"
     private set
+  val running: Boolean get() = server != null
 
   @Synchronized fun start() {
     if (server != null) return
     try {
-      val created = LocalEndpoint(27121, submissions) { problem, token ->
+      val created = startLocalEndpoint(submissions = submissions) { problem, token ->
         val completion = CompletableFuture<Unit>()
         ApplicationManager.getApplication().invokeLater {
           if (completion.isDone) return@invokeLater
@@ -74,9 +75,13 @@ class IdeBridge : Disposable {
         catch (error: java.util.concurrent.ExecutionException) { throw error.cause ?: error }
         catch (error: java.util.concurrent.TimeoutException) { completion.cancel(false); throw error }
       }
-      created.start(); server = created
-      status = "等待题目导入"
-    } catch (_: Exception) { status = "导入功能启动失败，请检查端口占用。" }
+      server = created
+      status = "等待题目导入（本机端口 ${created.port}）"
+    } catch (error: PortRangeExhaustedException) {
+      status = error.message ?: "本机端口均被占用。"
+    } catch (error: Exception) {
+      status = "导入功能启动失败：${error.message ?: error.javaClass.simpleName}"
+    }
   }
   fun submit(token: String, problem: Problem, language: String, source: String) =
     submissions.enqueue(token, problem, language, source)

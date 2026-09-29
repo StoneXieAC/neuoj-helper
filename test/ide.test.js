@@ -38,7 +38,10 @@ test('多样例保留末尾换行并按编号配对', () => {
   doc.querySelector('#example-output-2').id = 'example-output-3';
   assert.throws(() => core.extractIdeProblem(doc, p.url), /配对/);
 });
-function bridgeSetup({ status = 200, capabilities = { protocolVersion: 1, capabilities: ['importProblem', 'submitCode'] }, connected = true, tabHandler, tabLookup } = {}) {
+const bridgeCapabilities = { protocolVersion: 1, capabilities: ['importProblem', 'submitCode'], ide: 'CLion',
+  service: 'neuoj-ide-bridge', instanceId: '11111111-1111-4111-8111-111111111111' };
+function bridgeSetup({ status = 200, capabilities = bridgeCapabilities, connected = true, ports = [39271],
+  tabHandler, tabLookup, respond, fastRetry = false } = {}) {
   const requests = [];
   const session = {};
   const chrome = {
@@ -56,31 +59,155 @@ function bridgeSetup({ status = 200, capabilities = { protocolVersion: 1, capabi
     }
   };
   const context = vm.createContext({
-    chrome, URL, AbortController, setTimeout, clearTimeout, console, TypeError,
+    chrome, URL, AbortController, setTimeout: fastRetry ? (callback, delay) => setTimeout(callback, delay === 3000 ? 0 : delay) : setTimeout,
+    clearTimeout, console, TypeError,
     crypto: require('node:crypto').webcrypto,
     fetch: async (url, options) => {
-      requests.push({ url, options }); if (!connected) throw new TypeError('network');
+      requests.push({ url, options });
+      if (respond) return respond(url, options);
+      if (!connected || !ports.includes(Number(new URL(url).port))) throw new TypeError('network');
       return new Response(JSON.stringify(url.endsWith('capabilities') ? capabilities : { ok: true }), { status });
     }
   });
   vm.runInContext(fs.readFileSync('extension/src/background.js', 'utf8'), context);
-  return { context, requests };
+  return { context, requests, session };
 }
 test('后台导入先验证协议且保持原有消息边界', async () => {
   const app = bridgeSetup();
   const problem = core.extractIdeProblem(new JSDOM(html).window.document, 'https://oj.neu.edu.cn/problems/83');
   assert.equal((await app.context.importToIde(problem, { url: problem.url, tab: { id: 10 } })).ok, true);
-  assert.equal(app.requests.length, 2);
-  assert.equal(app.requests[0].url, 'http://127.0.0.1:27121/v1/capabilities');
-  assert.equal(app.requests[0].options.headers.Authorization, undefined);
-  assert.match(app.requests[0].options.headers['X-NEUOJ-Pair'], /^[a-f0-9]{64}$/);
+  assert.equal(app.requests.length, 12);
+  assert.equal(app.requests[0].url, 'http://127.0.0.1:39271/v1/capabilities');
+  assert.equal(app.requests[0].options.headers, undefined);
+  assert.equal(app.requests[10].url, 'http://127.0.0.1:39271/v1/capabilities');
+  assert.equal(app.requests[10].options.headers, undefined);
+  assert.match(app.requests[11].options.headers['X-NEUOJ-Pair'], /^[a-f0-9]{64}$/);
+  assert.equal(app.session.ideBridgeEndpoint.port, 39271);
   await assert.rejects(app.context.importToIde(problem, { url: 'https://other.example/problems/83' }), /无效/);
 });
 test('后台连接和协议失败有明确反馈', async () => {
   const problem = core.extractIdeProblem(new JSDOM(html).window.document, 'https://oj.neu.edu.cn/problems/83');
-  for (const [options, pattern] of [[{ status: 403 }, /来源/], [{ status: 409 }, /本地代码文件/], [{ connected: false }, /无法连接/], [{ capabilities: { protocolVersion: 2 } }, /不兼容/]]) {
+  for (const [options, pattern] of [[{ status: 403 }, /无法连接/], [{ status: 409 }, /无法连接/],
+    [{ connected: false }, /无法连接/], [{ capabilities: { ...bridgeCapabilities, protocolVersion: 2 } }, /不兼容/]]) {
     await assert.rejects(bridgeSetup(options).context.importToIde(problem, { url: problem.url, tab: { id: 10 } }), pattern);
   }
+});
+test('端口发现忽略其他服务，并拒绝多个 CLion 实例', async () => {
+  const problem = core.extractIdeProblem(new JSDOM(html).window.document, 'https://oj.neu.edu.cn/problems/83');
+  const single = bridgeSetup({ ports: [39272], respond: (url, options) => {
+    const port = Number(new URL(url).port);
+    if (port === 39271) return new Response(JSON.stringify({ empty: true }));
+    if (port !== 39272) throw new TypeError('network');
+    return new Response(JSON.stringify(url.endsWith('capabilities') ? bridgeCapabilities : { ok: true }));
+  } });
+  assert.equal((await single.context.importToIde(problem, { url: problem.url, tab: { id: 10 } })).ok, true);
+  assert.equal(single.requests.at(-1).url, 'http://127.0.0.1:39272/v1/problems');
+  assert.equal(single.session.ideBridgeEndpoint.port, 39272);
+  const multiple = bridgeSetup({ ports: [39271, 39272] });
+  await assert.rejects(multiple.context.importToIde(problem, { url: problem.url, tab: { id: 10 } }), /多个 CLion/);
+  assert.equal(multiple.requests.filter(item => item.url.endsWith('/v1/problems')).length, 0);
+  assert.equal(multiple.session.ideBridgeToken, undefined);
+});
+test('有效实例返回工作区错误时保持明确反馈', async () => {
+  const problem = core.extractIdeProblem(new JSDOM(html).window.document, 'https://oj.neu.edu.cn/problems/83');
+  const app = bridgeSetup({ respond: (url) => {
+    if (Number(new URL(url).port) !== 39271) throw new TypeError('network');
+    return new Response(JSON.stringify(url.endsWith('capabilities') ? bridgeCapabilities : { error: 'no receiver' }),
+      { status: url.endsWith('capabilities') ? 200 : 409 });
+  } });
+  await assert.rejects(app.context.importToIde(problem, { url: problem.url, tab: { id: 10 } }), /本地代码文件/);
+  assert.equal(app.session.ideBridgeEndpoint, undefined);
+});
+test('后台恢复使用会话端口，实例变化后停止发送配对值', async () => {
+  const token = 'a'.repeat(64);
+  let capabilitiesCount = 0;
+  const app = bridgeSetup({
+    tabHandler: async () => ({ ok: true, url: 'https://oj.neu.edu.cn/submissions/123' }),
+    respond: (url, options) => {
+      assert.equal(Number(new URL(url).port), 39272);
+      if (url.endsWith('capabilities')) {
+        assert.equal(options.headers, undefined);
+        capabilitiesCount++;
+        return new Response(JSON.stringify({ ...bridgeCapabilities,
+          instanceId: capabilitiesCount === 1 ? bridgeCapabilities.instanceId : '22222222-2222-4222-8222-222222222222' }));
+      }
+      if (url.endsWith('submissions/next')) return new Response(JSON.stringify({
+        id: 'task', problemId: 'https://oj.neu.edu.cn/problems/83',
+        url: 'https://oj.neu.edu.cn/problems/83', language: 'C', source: 'int main(){}'
+      }));
+      return new Response(JSON.stringify({ ok: true }));
+    }
+  });
+  app.session.ideBridgeToken = token;
+  app.session.ideBridgeEndpoint = { port: 39272, instanceId: bridgeCapabilities.instanceId };
+  app.session.ideBridgeTabs = [{ tabId: 10, scope: 'https://oj.neu.edu.cn' }];
+  await app.context.startBridge();
+  assert.equal(capabilitiesCount, 2);
+  assert.deepEqual(app.requests.map(item => new URL(item.url).pathname),
+    ['/v1/capabilities', '/v1/submissions/next', '/v1/submissions/results', '/v1/capabilities']);
+  assert.equal(app.requests[1].options.headers['X-NEUOJ-Pair'], token);
+  assert.equal(app.requests[2].options.headers['X-NEUOJ-Pair'], token);
+  assert.equal(app.requests[3].options.headers, undefined);
+});
+test('同一 CLion 实例重新导入不取消等待中的提交任务', async () => {
+  const url = 'https://oj.neu.edu.cn/problems/83';
+  const problem = core.extractIdeProblem(new JSDOM(html).window.document, url);
+  const endpoint = { port: 39271, instanceId: bridgeCapabilities.instanceId };
+  const token = 'a'.repeat(64);
+  let resolveNext;
+  let pollSignal;
+  let submissions = 0;
+  const app = bridgeSetup({
+    tabHandler: async () => { submissions++; return { ok: true, url: 'https://oj.neu.edu.cn/submissions/123' }; },
+    respond: (target, options) => {
+      if (Number(new URL(target).port) !== endpoint.port) throw new TypeError('network');
+      if (target.endsWith('submissions/next')) {
+        pollSignal = options.signal;
+        return new Promise(resolve => { resolveNext = resolve; });
+      }
+      return new Response(JSON.stringify(target.endsWith('capabilities') ? bridgeCapabilities : { ok: true }));
+    }
+  });
+  app.session.ideBridgeToken = token;
+  app.session.ideBridgeEndpoint = endpoint;
+  app.session.ideBridgeTabs = [{ tabId: 10, scope: 'https://oj.neu.edu.cn' }];
+  const pending = app.context.pollBridge(endpoint, token);
+  assert.ok(resolveNext);
+  assert.equal((await app.context.importToIde(problem, { url, tab: { id: 10 } })).ok, true);
+  assert.equal(pollSignal.aborted, false);
+  resolveNext(new Response(JSON.stringify({ id: 'task', problemId: url, url, language: 'C', source: 'int main(){}' })));
+  assert.equal(await pending, true);
+  assert.equal(submissions, 1);
+  assert.equal(app.requests.filter(item => item.url.endsWith('submissions/results')).length, 1);
+});
+test('能力探测暂时失败时重试，确认实例变化后才停止轮询', async () => {
+  const token = 'a'.repeat(64);
+  let checks = 0;
+  const app = bridgeSetup({ fastRetry: true,
+    tabHandler: async () => ({ ok: true, url: 'https://oj.neu.edu.cn/submissions/123' }),
+    respond: (target) => {
+      if (Number(new URL(target).port) !== 39272) throw new TypeError('network');
+      if (target.endsWith('capabilities')) {
+        checks++;
+        if (checks === 1) return new Response('', { status: 503 });
+        return new Response(JSON.stringify({ ...bridgeCapabilities,
+          instanceId: checks === 2 ? bridgeCapabilities.instanceId : '22222222-2222-4222-8222-222222222222' }));
+      }
+      if (target.endsWith('submissions/next')) return new Response(JSON.stringify({
+        id: 'task', problemId: 'https://oj.neu.edu.cn/problems/83',
+        url: 'https://oj.neu.edu.cn/problems/83', language: 'C', source: 'int main(){}'
+      }));
+      return new Response(JSON.stringify({ ok: true }));
+    }
+  });
+  app.session.ideBridgeToken = token;
+  app.session.ideBridgeEndpoint = { port: 39272, instanceId: bridgeCapabilities.instanceId };
+  app.session.ideBridgeTabs = [{ tabId: 10, scope: 'https://oj.neu.edu.cn' }];
+  await app.context.startBridge();
+  assert.equal(checks, 3);
+  assert.equal(app.requests.filter(item => item.url.endsWith('submissions/next')).length, 1);
+  assert.equal(app.requests.filter(item => item.url.endsWith('submissions/results')).length, 1);
+  assert.equal(app.requests[0].options.headers, undefined);
 });
 test('后台只向同一访问入口的已登记标签页发送提交任务', async () => {
   const sent = [];

@@ -3,10 +3,27 @@ package cn.neuoj.helper
 import com.google.gson.Gson
 import com.google.gson.JsonParser
 import com.sun.net.httpserver.HttpServer
+import java.net.BindException
 import java.net.InetSocketAddress
+import java.util.UUID
 import java.util.concurrent.Executors
 
 class NoReceiverException : IllegalStateException()
+class PortRangeExhaustedException(ports: IntRange) :
+  IllegalStateException("本机端口 ${ports.first}–${ports.last} 均被占用，请关闭占用程序后重试。")
+
+internal val BRIDGE_PORTS = 39271..39280
+
+internal fun startLocalEndpoint(ports: IntRange = BRIDGE_PORTS, submissions: SubmissionQueue = SubmissionQueue(),
+  importer: (Problem, String) -> Unit): LocalEndpoint {
+  for (port in ports) {
+    val endpoint = try { LocalEndpoint(port, submissions, importer) }
+    catch (_: BindException) { continue }
+    try { endpoint.start(); return endpoint }
+    catch (error: Exception) { endpoint.close(); throw error }
+  }
+  throw PortRangeExhaustedException(ports)
+}
 
 /** 与 IDE 生命周期分离的协议接收器，供接收适配器使用。 */
 class LocalEndpoint(port: Int, private val submissions: SubmissionQueue = SubmissionQueue(),
@@ -14,6 +31,7 @@ class LocalEndpoint(port: Int, private val submissions: SubmissionQueue = Submis
   private val server = HttpServer.create(InetSocketAddress("127.0.0.1", port), 16)
   private val workers = Executors.newFixedThreadPool(4) { runnable -> Thread(runnable, "NEUOJ 连接").apply { isDaemon = true } }
   val port: Int get() = server.address.port
+  val instanceId: String = UUID.randomUUID().toString()
   init {
     server.executor = workers
     server.createContext("/v1/") { exchange ->
@@ -27,7 +45,8 @@ class LocalEndpoint(port: Int, private val submissions: SubmissionQueue = Submis
         } else if (exchange.requestURI.rawQuery != null) {
           code = 400; response = mapOf("error" to "请求地址无效。")
         } else if (exchange.requestURI.path == "/v1/capabilities" && exchange.requestMethod == "GET") {
-          response = mapOf("protocolVersion" to 1, "capabilities" to listOf("importProblem", "submitCode"), "ide" to "CLion")
+          response = mapOf("protocolVersion" to 1, "capabilities" to listOf("importProblem", "submitCode"),
+            "ide" to "CLion", "service" to "neuoj-ide-bridge", "instanceId" to instanceId)
         } else if (exchange.requestURI.path == "/v1/problems" && exchange.requestMethod == "POST") {
           require(exchange.requestHeaders.getFirst("Content-Type")?.substringBefore(';') == "application/json") { "需要 JSON 数据。" }
           val token = exchange.requestHeaders.getFirst("X-NEUOJ-Pair") ?: ""
