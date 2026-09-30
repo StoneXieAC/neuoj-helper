@@ -1,4 +1,5 @@
 import org.jetbrains.intellij.platform.gradle.IntelliJPlatformType
+import org.gradle.language.jvm.tasks.ProcessResources
 
 plugins {
   kotlin("jvm") version "2.4.20"
@@ -6,7 +7,11 @@ plugins {
 }
 
 group = "cn.neuoj"
-version = "0.2.0-beta"
+version = "0.2.1-beta"
+val targetPlatform = providers.gradleProperty("targetPlatform").orNull
+require(targetPlatform == null || targetPlatform in setOf("macos", "linux-x64", "windows-x64")) {
+  "targetPlatform 必须为 macos、linux-x64 或 windows-x64"
+}
 repositories {
   intellijPlatform { localPlatformArtifacts() }
   providers.gradleProperty("mavenCentralMirror").orNull?.let { maven(it) }
@@ -49,6 +54,15 @@ intellijPlatform {
 tasks.test {
   systemProperty("file.encoding", "UTF-8")
   systemProperty("java.awt.headless", "true")
+}
+
+tasks.named<ProcessResources>("processResources") {
+  inputs.property("targetPlatform", targetPlatform ?: "all")
+  if (targetPlatform != null) {
+    for (platform in setOf("macos", "linux-x64", "windows-x64") - targetPlatform) {
+      exclude("native/$platform/**")
+    }
+  }
 }
 
 // 开发沙箱可打开一次性的验收项目，不改变正式 IDE 配置。

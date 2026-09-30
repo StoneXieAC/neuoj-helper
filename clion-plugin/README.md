@@ -27,7 +27,7 @@ Windows 可使用 `gradlew.bat test buildPlugin`。POSIX Gradle Wrapper 默认�
 NEUOJ_TEST_GXX="$(which g++)" NEUOJ_TEST_GCC="$(which gcc)" ./gradlew test --rerun-tasks -PlocalIdePath="/实际路径/CLion.app"
 ```
 
-测试未提供此变量时仍运行比较、协议、工作区、进程和编译器识别测试，跳过真实编译闭环。插件 ZIP 位于 `build/distributions/`，也随 [v0.2.0-beta 预发布](https://github.com/StoneXieAC/neuoj-helper/releases/tag/v0.2.0-beta) 提供。不自动安装系统编译器。
+测试未提供此变量时仍运行比较、协议、工作区、进程和编译器识别测试，跳过真实编译闭环。插件 ZIP 位于 `build/distributions/`。发布时使用 `-PtargetPlatform=macos`、`-PtargetPlatform=linux-x64` 或 `-PtargetPlatform=windows-x64` 分别构建专用 ZIP，每包只包含对应平台的计时程序；不指定该参数时仍包含三平台资源。[v0.2.1-beta 预发布](https://github.com/StoneXieAC/neuoj-helper/releases/tag/v0.2.1-beta) 提供三个平台专用包。不自动安装系统编译器。
 
 ## 使用
 

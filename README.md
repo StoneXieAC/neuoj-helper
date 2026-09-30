@@ -2,7 +2,7 @@
 
 ## 使用
 
-1. 从 [v0.2.0-beta 预发布页](https://github.com/StoneXieAC/neuoj-helper/releases/tag/v0.2.0-beta) 下载适合浏览器的发行包。Chrome 114、Edge 114 或更新版本使用 `neuoj-helper-0.2.0-beta-chrome.zip`；Firefox 140 或更新版本使用已完成 Mozilla 签名的 `neuoj-helper-0.2.0-beta-firefox.xpi`。
+1. 从 [v0.2.1-beta 预发布页](https://github.com/StoneXieAC/neuoj-helper/releases/tag/v0.2.1-beta) 下载适合浏览器的发行包。Chrome 114、Edge 114 或更新版本使用 `neuoj-helper-0.2.1-beta-chrome.zip`；Firefox 140 或更新版本使用已完成 Mozilla 签名的 `neuoj-helper-0.2.1-beta-firefox.xpi`。
    - Chrome：解压 ZIP，打开 `chrome://extensions/`，启用开发者模式，选择“加载已解压的扩展程序”，选中解压后的目录。
    - Edge：解压 ZIP，打开 `edge://extensions/`，启用开发人员模式，选择“加载解压缩的扩展”，选中解压后的目录。
    - Firefox：打开 `about:addons`，在齿轮菜单选择“从文件安装附加组件”，选中 XPI 并确认数据传输权限。正式安装在重启后保留，无需关闭签名校验。更新时安装新版本的签名 XPI。
@@ -27,4 +27,4 @@ WA 分析会保留页面提供的标准答案和用户输出；RE、TLE、MLE �
 
 ## CLion 竞赛辅助
 
-新增单文件 C/C++ 题目导入、本地样例测试与 CLion 直接提交功能。插件支持自动探测和手动配置编译器，并可配置 C/C++ 标准及 `-O2` 优化。`v0.2.0-beta` 预发布页同时提供 `neuoj-clion-helper-0.2.0-beta.zip`；正式提交沿用浏览器中的 NEUOJ 登录态。安装与构建见 [CLion 插件指南](clion-plugin/README.md)，浏览器通信见 [IDE 协议](docs/ide-protocol.md)。现有提交错误分析功能保持独立。
+新增单文件 C/C++ 题目导入、本地样例测试与 CLion 直接提交功能。插件支持自动探测和手动配置编译器，并可配置 C/C++ 标准及 `-O2` 优化。`v0.2.1-beta` 预发布页分别提供 `neuoj-clion-helper-0.2.1-beta-macos.zip`、`neuoj-clion-helper-0.2.1-beta-linux-x64.zip` 和 `neuoj-clion-helper-0.2.1-beta-windows-x64.zip`，请按操作系统下载；正式提交沿用浏览器中的 NEUOJ 登录态。安装与构建见 [CLion 插件指南](clion-plugin/README.md)，浏览器通信见 [IDE 协议](docs/ide-protocol.md)。现有提交错误分析功能保持独立。

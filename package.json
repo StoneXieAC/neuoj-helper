@@ -1,6 +1,6 @@
 {
   "name": "neuoj-helper",
-  "version": "0.2.0-beta",
+  "version": "0.2.1-beta",
   "private": true,
   "description": "NEUOJ 提交错误分析浏览器扩展",
   "scripts": {

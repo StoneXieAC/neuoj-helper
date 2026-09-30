@@ -39,7 +39,7 @@ jobs:
             dist/firefox
           if-no-files-found: error
 
-  clion:
+  clion-test:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -49,27 +49,57 @@ jobs:
           distribution: temurin
           java-version: '21'
       - uses: gradle/actions/setup-gradle@v6
-      - name: 测试并构建 CLion 插件
+      - name: 测试 CLion 插件
         working-directory: clion-plugin
-        run: ./gradlew test buildPlugin
-      - name: 检查发布包包含三个平台的计时程序
+        run: ./gradlew test
+
+  clion:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [macos, linux-x64, windows-x64]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: gradle/actions/setup-gradle@v6
+      - name: 构建 CLion 平台专用插件
         working-directory: clion-plugin
+        run: ./gradlew buildPlugin -PtargetPlatform=${{ matrix.target }}
+      - name: 检查发布包只包含目标平台的计时程序
+        working-directory: clion-plugin
+        env:
+          TARGET_PLATFORM: ${{ matrix.target }}
         run: |
           plugin_jar="$(find build/libs -maxdepth 1 -name '*.jar' ! -name '*-base.jar' ! -name '*-searchableOptions.jar' -print -quit)"
           test -n "$plugin_jar"
-          jar tf "$plugin_jar" | grep -Fx native/macos/neuoj-time
-          jar tf "$plugin_jar" | grep -Fx native/linux-x64/neuoj-time
-          jar tf "$plugin_jar" | grep -Fx native/windows-x64/neuoj-time.exe
+          jar tf "$plugin_jar" | grep -E '^native/[^/]+/neuoj-time(\.exe)?$' > native-files.txt
+          case "$TARGET_PLATFORM" in
+            macos) expected=native/macos/neuoj-time ;;
+            linux-x64) expected=native/linux-x64/neuoj-time ;;
+            windows-x64) expected=native/windows-x64/neuoj-time.exe ;;
+          esac
+          test "$(cat native-files.txt)" = "$expected"
+      - name: 命名平台专用发行包
+        env:
+          TARGET_PLATFORM: ${{ matrix.target }}
+        run: |
+          version="$(sed -n 's/^version = "\([^"]*\)"$/\1/p' clion-plugin/build.gradle.kts)"
+          mv "clion-plugin/build/distributions/neuoj-clion-helper-${version}.zip" "clion-plugin/build/distributions/neuoj-clion-helper-${version}-${TARGET_PLATFORM}.zip"
       - name: 保存 CLion 插件包
         uses: actions/upload-artifact@v7
         with:
-          name: clion-plugin
-          path: clion-plugin/build/distributions/neuoj-clion-helper-*.zip
+          name: clion-plugin-${{ matrix.target }}
+          path: clion-plugin/build/distributions/neuoj-clion-helper-*-${{ matrix.target }}.zip
           if-no-files-found: error
 
   release:
     if: startsWith(github.ref, 'refs/tags/')
-    needs: [build, clion]
+    needs: [build, clion-test, clion]
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     permissions:
@@ -87,7 +117,8 @@ jobs:
           path: dist
       - uses: actions/download-artifact@v8
         with:
-          name: clion-plugin
+          pattern: clion-plugin-*
+          merge-multiple: true
           path: dist/releases
       - name: 打包 Chrome
         run: node scripts/release.js package
@@ -111,12 +142,16 @@ jobs:
           version="$(node -p "require('./package.json').version")"
           chrome="dist/releases/neuoj-helper-${version}-chrome.zip"
           firefox="dist/releases/neuoj-helper-${version}-firefox.xpi"
-          clion="dist/releases/neuoj-clion-helper-${version}.zip"
+          clion_macos="dist/releases/neuoj-clion-helper-${version}-macos.zip"
+          clion_linux="dist/releases/neuoj-clion-helper-${version}-linux-x64.zip"
+          clion_windows="dist/releases/neuoj-clion-helper-${version}-windows-x64.zip"
           test -f "$chrome"
           test -f "$firefox"
-          test -f "$clion"
+          test -f "$clion_macos"
+          test -f "$clion_linux"
+          test -f "$clion_windows"
           if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" "$chrome" "$firefox" "$clion" --repo "$GITHUB_REPOSITORY" --clobber
+            gh release upload "$GITHUB_REF_NAME" "$chrome" "$firefox" "$clion_macos" "$clion_linux" "$clion_windows" --repo "$GITHUB_REPOSITORY" --clobber
             if [[ "$GITHUB_REF_NAME" == *-* ]]; then
               gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --prerelease
             fi
@@ -125,5 +160,5 @@ jobs:
             if [[ "$GITHUB_REF_NAME" == *-* ]]; then
               release_flags+=(--prerelease)
             fi
-            gh release create "$GITHUB_REF_NAME" "$chrome" "$firefox" "$clion" --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes "${release_flags[@]}"
+            gh release create "$GITHUB_REF_NAME" "$chrome" "$firefox" "$clion_macos" "$clion_linux" "$clion_windows" --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes "${release_flags[@]}"
           fi
