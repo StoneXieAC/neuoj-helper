@@ -457,8 +457,10 @@ class CoreTest {
   @Test fun nativeCpuTimingCoversAllPlatforms() {
     assumeTrue(NativeCpuTimer.resourcePath() != null)
     val root = Files.createTempDirectory("neuoj native 空格 ")
+    val probeRoot = if (System.getProperty("os.name").startsWith("Windows"))
+      Files.createTempDirectory("neuoj-probe-") else root
     try {
-      val probe = processProbe(root)
+      val probe = processProbe(probeRoot)
       val hello = Processes.execute(probe + "echo", root, "hello\n", 5000, AtomicBoolean(), measureCpu = true)
       assertNull(hello.failure)
       assertEquals("hello\n", hello.stdout)
@@ -491,7 +493,10 @@ class CoreTest {
         timeoutMs = 5000, cancelled = AtomicBoolean(), measureCpu = true)
       assertTrue(missing.failure!!.startsWith("无法启动程序"))
       assertNull(missing.cpuTimeMicros)
-    } finally { root.toFile().deleteRecursively() }
+    } finally {
+      root.toFile().deleteRecursively()
+      if (probeRoot != root) probeRoot.toFile().deleteRecursively()
+    }
   }
   @Test fun linuxTimerDoesNotCountDelayedHelperObservationAsTimeout() {
     assumeTrue(System.getProperty("os.name").startsWith("Linux"))
