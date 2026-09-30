@@ -54,6 +54,7 @@ intellijPlatform {
 tasks.test {
   systemProperty("file.encoding", "UTF-8")
   systemProperty("java.awt.headless", "true")
+  testLogging.exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
 }
 
 tasks.named<ProcessResources>("processResources") {
