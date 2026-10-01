@@ -25,8 +25,8 @@ WA 分析会保留页面提供的标准答案和用户输出；RE、TLE、MLE �
 
 回答会流式显示，并渲染 Markdown 和 LaTeX 公式。渲染所需脚本和字体随插件提供；回答中的原始 HTML、图片和不安全链接不会执行或加载。若接口明确不支持流式请求，插件会自动重试一次非流式请求。
 
-浏览器最低版本目标为 Chrome／Edge 110、Firefox 115。Firefox 115–139 首次使用发送数据的功能前，需在设置中明确同意数据发送；可随时撤回。Firefox 140 及之后使用浏览器内置授权。合并预发布页中的 Web 扩展使用版本号 0.2.2，CLion 插件使用版本号 0.2.2-beta。
+浏览器最低支持版本为 Chrome／Edge 110、Firefox 115。Firefox 115–139 首次使用发送数据的功能前，需在设置中明确同意数据发送；可随时撤回。Firefox 140 及之后使用浏览器内置授权。合并预发布页中的 Web 扩展使用版本号 0.2.2，CLion 插件使用版本号 0.2.2-beta。
 
 ## CLion 竞赛辅助
 
-CLion 兼容范围目标为 2023.3–2026.2，仅支持 CLion；跨版本检查见 CI 的兼容性报告。新增单文件 C/C++ 题目导入、本地样例测试与 CLion 直接提交功能。插件支持自动探测和手动配置编译器，并可配置 C/C++ 标准及 `-O2` 优化。`v0.2.2-beta` 预发布页分别提供 `neuoj-clion-helper-0.2.2-beta-macos.zip`、`neuoj-clion-helper-0.2.2-beta-linux-x64.zip` 和 `neuoj-clion-helper-0.2.2-beta-windows-x64.zip`，请按操作系统下载；正式提交沿用浏览器中的 NEUOJ 登录态。安装与构建见 [CLion 插件指南](clion-plugin/README.md)，浏览器通信见 [IDE 协议](docs/ide-protocol.md)。现有提交错误分析功能保持独立。
+CLion 支持 2023.3–2026.2，已通过 2023.3、2024.2、2025.2、2026.2.2 的兼容性检查；仅支持 CLion。新增单文件 C/C++ 题目导入、本地样例测试与 CLion 直接提交功能。插件支持自动探测和手动配置编译器，并可配置 C/C++ 标准及 `-O2` 优化。`v0.2.2-beta` 预发布页分别提供 `neuoj-clion-helper-0.2.2-beta-macos.zip`、`neuoj-clion-helper-0.2.2-beta-linux-x64.zip` 和 `neuoj-clion-helper-0.2.2-beta-windows-x64.zip`，请按操作系统下载；正式提交沿用浏览器中的 NEUOJ 登录态。安装与构建见 [CLion 插件指南](clion-plugin/README.md)，浏览器通信见 [IDE 协议](docs/ide-protocol.md)。现有提交错误分析功能保持独立。
