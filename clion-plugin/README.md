@@ -1,10 +1,10 @@
 # NEUOJ CLion 插件
 
-插件适配 CLion 2026.2.2，使用本机编译器编译当前编辑器中的单文件 C/C++。macOS、Linux x86-64 和 Windows x86-64 的样例显示程序的 CPU 用时。支持导入题面和样例、本地测试、两种输出比较模式，以及从 CLion 正式提交代码。题目与导入时文件的关联仅在本次 CLion 会话有效。
+插件兼容范围目标为 CLion 2023.3–2026.2，默认使用 2023.3 平台编译；兼容性以最低平台构建和 CI 的四版本 Plugin Verifier 报告为准。本机已完成 2026.2.2 测试、构建和 Plugin Verifier 检查，旧版验证尚待完成。插件使用本机编译器编译当前编辑器中的单文件 C/C++。macOS、Linux x86-64 和 Windows x86-64 的样例显示程序的 CPU 用时。支持导入题面和样例、本地测试、两种输出比较模式，以及从 CLion 正式提交代码。题目与导入时文件的关联仅在本次 CLion 会话有效。
 
 ## 构建
 
-使用 JDK 21，无需全局安装 Gradle 或 Kotlin。以下命令均在 `clion-plugin/` 执行：
+构建使用 JDK 21，插件字节码与 Java API 目标为 17；用户运行插件使用 IDE 自带的运行时即可，无需安装 JDK 21。无需全局安装 Gradle 或 Kotlin。以下命令均在 `clion-plugin/` 执行：
 
 ```sh
 ./gradlew test buildPlugin
@@ -19,6 +19,8 @@ Windows 可使用 `gradlew.bat test buildPlugin`。POSIX Gradle Wrapper 默认�
 
 原生计时辅助程序的源码分别位于 `native/macos/`、`native/linux/` 和 `native/windows/`。插件资源包含 macOS arm64/x86-64 通用程序，以及 Linux、Windows 的 x86-64 程序。更新源码后运行对应目录下的 `build.sh` 并提交资源文件；Linux 与 Windows 的构建脚本使用 Zig 0.14.1 交叉编译，CI 会核对产物。普通插件构建直接打包已有资源，不需要本机安装三个平台的编译器。
 
+默认 `./gradlew verifyPlugin` 验证 CLion 2023.3、2024.2、2025.2、2026.2.2；CI 分别运行这四个目标。可用 `-PverificationIdeVersion=2025.2` 单独验证指定版本。`-PlocalIdePath` 会同时覆盖编译和验证平台，只用于本机检查，不能代替最低平台验证。
+
 本地校验器文件可存放在 `.deps/tools/`，例如执行 `./gradlew verifyPlugin -PlocalVerifierJar=../.deps/tools/verifier-cli-1.410-all.jar -PlocalIdePath="/实际路径/CLion.app"`。未指定本地校验器时，Gradle 会按构建配置获取。测试用 CLion 项目位于 `~/workspace/cpp/neuoj-helper`，可通过 `-PuiProject="$HOME/workspace/cpp/neuoj-helper"` 传给 `runIde`。
 
 本机真实编译闭环测试需要指定可用的 C++ 编译器路径：
@@ -27,7 +29,7 @@ Windows 可使用 `gradlew.bat test buildPlugin`。POSIX Gradle Wrapper 默认�
 NEUOJ_TEST_GXX="$(which g++)" NEUOJ_TEST_GCC="$(which gcc)" ./gradlew test --rerun-tasks -PlocalIdePath="/实际路径/CLion.app"
 ```
 
-测试未提供此变量时仍运行比较、协议、工作区、进程和编译器识别测试，跳过真实编译闭环。插件 ZIP 位于 `build/distributions/`。发布时使用 `-PtargetPlatform=macos`、`-PtargetPlatform=linux-x64` 或 `-PtargetPlatform=windows-x64` 分别构建专用 ZIP，每包只包含对应平台的计时程序；不指定该参数时仍包含三平台资源。[v0.2.1-beta 预发布](https://github.com/StoneXieAC/neuoj-helper/releases/tag/v0.2.1-beta) 提供三个平台专用包。不自动安装系统编译器。
+测试未提供此变量时仍运行比较、协议、工作区、进程和编译器识别测试，跳过真实编译闭环。插件 ZIP 位于 `build/distributions/`。发布时使用 `-PtargetPlatform=macos`、`-PtargetPlatform=linux-x64` 或 `-PtargetPlatform=windows-x64` 分别构建专用 ZIP，每包只包含对应平台的计时程序；不指定该参数时仍包含三平台资源。[v0.2.2-beta 预发布](https://github.com/StoneXieAC/neuoj-helper/releases/tag/v0.2.2-beta) 提供三个平台专用包。不自动安装系统编译器。
 
 ## 使用
 

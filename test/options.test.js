@@ -9,16 +9,16 @@ const html = fs.readFileSync(path.join(__dirname, '../extension/src/options.html
 const script = fs.readFileSync(path.join(__dirname, '../extension/src/options.js'), 'utf8');
 const defaultPrompt = fs.readFileSync(path.join(__dirname, '../extension/prompts/system.md'), 'utf8').trim();
 
-async function setup(granted = true, stored = {}, saveFails = false, connectionResponse = { ok: true }, supportsAccessLevel = true) {
+async function setup(granted = true, stored = {}, saveFails = false, connectionResponse = { ok: true }, supportsAccessLevel = true, privacy = {}) {
   const dom = new JSDOM(html, { url: 'chrome-extension://example/src/options.html' });
   let requested;
   let saved;
   let closed = false;
   let tested;
   const chrome = {
-    runtime: { getURL(name) { return `chrome-extension://example/${name}`; },
+    runtime: { getManifest() { return privacy.firefox ? { browser_specific_settings: { gecko: {} } } : {}; }, getURL(name) { return `chrome-extension://example/${name}`; },
       sendMessage(value, callback) { tested = value; callback(connectionResponse); } },
-    permissions: { async request(value) { requested = value; return granted; } },
+    permissions: { async getAll() { return privacy.native ? { data_collection: [] } : {}; }, async request(value) { requested = value; return granted; } },
     storage: { local: { async get() { return stored; }, ...(supportsAccessLevel ? { async setAccessLevel() {} } : {}), async set(value) {
       if (saveFails) throw new Error('磁盘不可用');
       saved = value;
@@ -220,4 +220,40 @@ test('提示词无效或存储失败时不关闭窗口', async () => {
   await new Promise(resolve => setImmediate(resolve));
   assert.match(failing.document.getElementById('message').textContent, /磁盘不可用/);
   assert.equal(failing.closed, false);
+});
+
+
+test('旧版 Firefox 授权默认未勾选，未保存授权不能测试连接', async () => {
+  const app = await setup(true, {}, false, { ok: true }, true, { firefox: true });
+  const doc = app.document;
+  assert.equal(doc.getElementById('legacy-consent').hidden, false);
+  assert.equal(doc.getElementById('dataConsent').checked, false);
+  doc.getElementById('apiKey').value = 'secret';
+  doc.getElementById('dataConsent').checked = true;
+  doc.getElementById('testConnection').click();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(app.tested, undefined);
+  assert.match(doc.getElementById('message').textContent, /确认保存/);
+  doc.getElementById('settings').dispatchEvent(new doc.defaultView.Event('submit', { cancelable: true }));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(JSON.parse(JSON.stringify(app.saved.dataTransmissionConsent)), { version: 1, granted: true });
+});
+
+test('旧版 Firefox 可以直接撤回授权，无需填写有效接口设置', async () => {
+  const app = await setup(true, { dataTransmissionConsent: { version: 1, granted: true } }, false, { ok: true }, true, { firefox: true });
+  const doc = app.document;
+  assert.equal(doc.getElementById('dataConsent').checked, true);
+  doc.getElementById('revokeConsent').click();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(app.saved.dataTransmissionConsent.granted, false);
+  doc.getElementById('testConnection').click();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(app.tested, undefined);
+});
+
+test('新版 Firefox 使用内置授权，Chrome 隐藏兼容授权界面', async () => {
+  for (const privacy of [{ firefox: true, native: true }, {}]) {
+    const app = await setup(true, {}, false, { ok: true }, true, privacy);
+    assert.equal(app.document.getElementById('legacy-consent').hidden, true);
+  }
 });

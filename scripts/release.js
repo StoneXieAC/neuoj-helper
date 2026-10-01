@@ -6,6 +6,7 @@ const crypto = require('node:crypto');
 const { isDeepStrictEqual } = require('node:util');
 const { spawnSync } = require('node:child_process');
 const AdmZip = require('adm-zip');
+const { readReleaseVersions } = require('./versions');
 
 const ROOT = path.resolve(__dirname, '..');
 const RELEASE_DIR = path.join(ROOT, 'dist/releases');
@@ -60,7 +61,7 @@ function packageChrome() {
   const zip = new AdmZip();
   const sourceDir = path.join(ROOT, 'dist/chrome');
   for (const file of filesIn(sourceDir)) zip.addFile(file, fs.readFileSync(path.join(sourceDir, file)));
-  zip.writeZip(path.join(RELEASE_DIR, `neuoj-helper-${manifest().version_name || manifest().version}-chrome.zip`));
+  zip.writeZip(path.join(RELEASE_DIR, `neuoj-helper-${readReleaseVersions().web}-chrome.zip`));
 }
 
 function withSigningSource(sourceDir, signingDir, action) {
@@ -122,7 +123,7 @@ async function signFirefox() {
   const id = current.browser_specific_settings.gecko.id;
   const apiUrl = `https://addons.mozilla.org/api/v5/addons/addon/${encodeURIComponent(id)}/versions/${encodeURIComponent(current.version)}/`;
   fs.mkdirSync(RELEASE_DIR, { recursive: true });
-  const output = path.join(RELEASE_DIR, `neuoj-helper-${current.version_name || current.version}-firefox.xpi`);
+  const output = path.join(RELEASE_DIR, `neuoj-helper-${readReleaseVersions().web}-firefox.xpi`);
   fs.rmSync(output, { force: true });
   const previous = await existingVersion(fetch, apiUrl, key, secret);
   if (!previous) {

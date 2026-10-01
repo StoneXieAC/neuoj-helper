@@ -2,7 +2,7 @@
 
 ## 使用
 
-1. 从 [v0.2.1-beta 预发布页](https://github.com/StoneXieAC/neuoj-helper/releases/tag/v0.2.1-beta) 下载适合浏览器的发行包。Chrome 114、Edge 114 或更新版本使用 `neuoj-helper-0.2.1-beta-chrome.zip`；Firefox 140 或更新版本使用已完成 Mozilla 签名的 `neuoj-helper-0.2.1-beta-firefox.xpi`。
+1. 从 [v0.2.2-beta 预发布页](https://github.com/StoneXieAC/neuoj-helper/releases/tag/v0.2.2-beta) 下载适合浏览器的发行包。Chrome 110、Edge 110 或更新版本，使用 `neuoj-helper-0.2.2-chrome.zip`；Firefox 115 或更新版本，使用已完成 Mozilla 签名的 `neuoj-helper-0.2.2-firefox.xpi`。
    - Chrome：解压 ZIP，打开 `chrome://extensions/`，启用开发者模式，选择“加载已解压的扩展程序”，选中解压后的目录。
    - Edge：解压 ZIP，打开 `edge://extensions/`，启用开发人员模式，选择“加载解压缩的扩展”，选中解压后的目录。
    - Firefox：打开 `about:addons`，在齿轮菜单选择“从文件安装附加组件”，选中 XPI 并确认数据传输权限。正式安装在重启后保留，无需关闭签名校验。更新时安装新版本的签名 XPI。
@@ -25,6 +25,8 @@ WA 分析会保留页面提供的标准答案和用户输出；RE、TLE、MLE �
 
 回答会流式显示，并渲染 Markdown 和 LaTeX 公式。渲染所需脚本和字体随插件提供；回答中的原始 HTML、图片和不安全链接不会执行或加载。若接口明确不支持流式请求，插件会自动重试一次非流式请求。
 
+浏览器最低版本目标为 Chrome／Edge 110、Firefox 115。Firefox 115–139 首次使用发送数据的功能前，需在设置中明确同意数据发送；可随时撤回。Firefox 140 及之后使用浏览器内置授权。合并预发布页中的 Web 扩展使用版本号 0.2.2，CLion 插件使用版本号 0.2.2-beta。
+
 ## CLion 竞赛辅助
 
-新增单文件 C/C++ 题目导入、本地样例测试与 CLion 直接提交功能。插件支持自动探测和手动配置编译器，并可配置 C/C++ 标准及 `-O2` 优化。`v0.2.1-beta` 预发布页分别提供 `neuoj-clion-helper-0.2.1-beta-macos.zip`、`neuoj-clion-helper-0.2.1-beta-linux-x64.zip` 和 `neuoj-clion-helper-0.2.1-beta-windows-x64.zip`，请按操作系统下载；正式提交沿用浏览器中的 NEUOJ 登录态。安装与构建见 [CLion 插件指南](clion-plugin/README.md)，浏览器通信见 [IDE 协议](docs/ide-protocol.md)。现有提交错误分析功能保持独立。
+CLion 兼容范围目标为 2023.3–2026.2，仅支持 CLion；跨版本检查见 CI 的兼容性报告。新增单文件 C/C++ 题目导入、本地样例测试与 CLion 直接提交功能。插件支持自动探测和手动配置编译器，并可配置 C/C++ 标准及 `-O2` 优化。`v0.2.2-beta` 预发布页分别提供 `neuoj-clion-helper-0.2.2-beta-macos.zip`、`neuoj-clion-helper-0.2.2-beta-linux-x64.zip` 和 `neuoj-clion-helper-0.2.2-beta-windows-x64.zip`，请按操作系统下载；正式提交沿用浏览器中的 NEUOJ 登录态。安装与构建见 [CLion 插件指南](clion-plugin/README.md)，浏览器通信见 [IDE 协议](docs/ide-protocol.md)。现有提交错误分析功能保持独立。

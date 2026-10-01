@@ -294,6 +294,7 @@ async function analyze(prompt, images, sender, emit, emitThinking, controller, r
     totalImageBytes += size;
     if (size > MAX_IMAGE_BYTES || totalImageBytes > MAX_TOTAL_IMAGE_BYTES) throw new Error('题图超过图片大小限制。');
   }
+  await requireDataConsent();
   await restrictStorage();
   const settings = await chrome.storage.local.get(['baseUrl', 'apiKey', 'model', 'reasoningEffort', 'systemPrompt']);
   const baseUrl = allowedBaseUrl(settings.baseUrl || DEFAULTS.baseUrl);
@@ -317,6 +318,7 @@ async function analyze(prompt, images, sender, emit, emitThinking, controller, r
   const messages = [{ role: 'system', content: systemPrompt }, { role: 'user', content: userContent }];
 
   async function request(stream) {
+    await requireDataConsent();
     resetIdle();
     try {
       return await fetch(`${baseUrl}/chat/completions`, {
@@ -326,6 +328,7 @@ async function analyze(prompt, images, sender, emit, emitThinking, controller, r
         signal: controller.signal
       });
     } catch (error) {
+      if (controller.signal.aborted) throw controller.signal.reason || error;
       if (error?.name === 'AbortError') throw error;
       throw new Error('无法连接模型接口，请检查地址、网络和接口权限。');
     }
@@ -359,6 +362,7 @@ async function testConnection(message, sender) {
   if (sender?.id !== chrome.runtime.id || sender.url !== chrome.runtime.getURL('src/options.html')) {
     throw new Error('只能从插件设置页测试连接。');
   }
+  await requireDataConsent();
   const settings = message.settings || {};
   const baseUrl = allowedBaseUrl(settings.baseUrl);
   const apiKey = String(settings.apiKey || '').trim();
@@ -369,6 +373,7 @@ async function testConnection(message, sender) {
   const origin = `${apiUrl.protocol}//${apiUrl.hostname}/*`;
   if (!await chrome.permissions.contains({ origins: [origin] })) throw new Error('尚未授权访问模型接口。');
   const controller = new AbortController();
+  activeRequests.add(controller);
   let timedOut = false;
   let timer;
   const deadline = new Promise((_, reject) => {
@@ -380,6 +385,7 @@ async function testConnection(message, sender) {
   });
   try {
     return await Promise.race([(async () => {
+      await requireDataConsent();
       const response = await fetch(`${baseUrl}/chat/completions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
@@ -396,10 +402,53 @@ async function testConnection(message, sender) {
       return { ok: true };
     })(), deadline]);
   } catch (error) {
+    if (!timedOut && controller.signal.aborted && controller.signal.reason?.name === 'Error') throw controller.signal.reason;
     if (timedOut || error?.name === 'AbortError') throw new Error('测试连接超时，请稍后重试。');
     throw error;
-  } finally { clearTimeout(timer); }
+  } finally { clearTimeout(timer); activeRequests.delete(controller); }
 }
+
+// Firefox 140 之前没有内置的数据发送授权；Chrome 不需要此兼容界面。
+const DATA_CONSENT_VERSION = 1;
+const activeRequests = new Set();
+async function requireDataConsent() {
+  if (!chrome.runtime.getManifest?.().browser_specific_settings?.gecko) return;
+  const permissions = await chrome.permissions.getAll();
+  if ('data_collection' in permissions) return;
+  const saved = await chrome.storage.local.get('dataTransmissionConsent');
+  if (saved.dataTransmissionConsent?.version !== DATA_CONSENT_VERSION || saved.dataTransmissionConsent.granted !== true) {
+    throw new Error('请先在插件设置中同意数据发送；可随时撤回授权。');
+  }
+}
+
+// 仅在长任务执行期间调用扩展 API，兼容 Chrome 110 的后台休眠机制。
+function keepBackgroundActive(signal) {
+  if (!chrome.runtime.getPlatformInfo || signal?.aborted) return () => {};
+  let timer;
+  let stopped = false;
+  const stop = () => {
+    stopped = true;
+    clearTimeout(timer);
+    signal?.removeEventListener('abort', stop);
+  };
+  const tick = () => {
+    if (stopped) return;
+    chrome.runtime.getPlatformInfo(() => { void chrome.runtime.lastError; });
+    timer = setTimeout(tick, 20000);
+  };
+  timer = setTimeout(tick, 20000);
+  signal?.addEventListener('abort', stop, { once: true });
+  return stop;
+}
+
+chrome.storage.onChanged?.addListener((changes, area) => {
+  if (area !== 'local' || !changes.dataTransmissionConsent) return;
+  const value = changes.dataTransmissionConsent.newValue;
+  if (value?.version === DATA_CONSENT_VERSION && value.granted) return;
+  for (const controller of activeRequests) controller.abort(new Error('数据发送授权已撤回，请在插件设置中重新授权。'));
+  bridgeGeneration++;
+  bridgePollController?.abort();
+});
 
 chrome.runtime.onInstalled.addListener(() => { restrictStorage().catch(console.error); });
 chrome.runtime.onStartup.addListener(() => { restrictStorage().catch(console.error); });
@@ -427,11 +476,14 @@ chrome.runtime.onConnect.addListener(port => {
   let started = false;
   let disconnected = false;
   const controller = new AbortController();
-  port.onDisconnect.addListener(() => { disconnected = true; controller.abort(); });
+  let stopKeepingActive = () => {};
+  port.onDisconnect.addListener(() => { disconnected = true; controller.abort(); stopKeepingActive(); });
   port.onMessage.addListener(message => {
     if (message?.type === 'PING') return;
     if (started || message?.type !== 'ANALYZE') return;
     started = true;
+    activeRequests.add(controller);
+    stopKeepingActive = keepBackgroundActive(controller.signal);
     const timeout = timeoutFor(controller);
     const post = event => {
       if (disconnected) return;
@@ -456,7 +508,7 @@ chrome.runtime.onConnect.addListener(port => {
           ? '模型接口连续 45 秒未返回新数据，请重试。'
           : error?.message || '操作失败。';
         post({ type: 'ERROR', error: reason });
-      }).finally(() => { timeout.clear(); if (!disconnected) port.disconnect(); });
+      }).finally(() => { timeout.clear(); stopKeepingActive(); activeRequests.delete(controller); if (!disconnected) port.disconnect(); });
   });
 });
 
@@ -509,7 +561,9 @@ function validBridgeCapabilities(value) {
 function bridgeUrl(port, path) { return `http://127.0.0.1:${port}/v1/${path}`; }
 
 async function bridgeCapabilities(port, timeout = 1500) {
+  await requireDataConsent();
   const controller = new AbortController();
+  activeRequests.add(controller);
   const timer = setTimeout(() => controller.abort(), timeout);
   try {
     const response = await fetch(bridgeUrl(port, 'capabilities'), {
@@ -518,7 +572,7 @@ async function bridgeCapabilities(port, timeout = 1500) {
     if (!response.ok) return null;
     return await response.json();
   } catch { return null; }
-  finally { clearTimeout(timer); }
+  finally { clearTimeout(timer); activeRequests.delete(controller); }
 }
 
 async function discoverBridge() {
@@ -559,17 +613,24 @@ async function rememberBridgeTab(sender) {
 }
 
 async function postBridgeResult(endpoint, token, result) {
-  const response = await fetch(bridgeUrl(endpoint.port, 'submissions/results'), {
-    method: 'POST', headers: { 'Content-Type': 'application/json', 'X-NEUOJ-Pair': token },
-    body: JSON.stringify(result), credentials: 'omit', redirect: 'error'
-  });
-  if (!response.ok) throw new Error(`IDE 未接受提交结果（${response.status}）。`);
+  await requireDataConsent();
+  const controller = new AbortController();
+  activeRequests.add(controller);
+  const timer = setTimeout(() => controller.abort(), 10000);
+  try {
+    const response = await fetch(bridgeUrl(endpoint.port, 'submissions/results'), {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'X-NEUOJ-Pair': token },
+      body: JSON.stringify(result), credentials: 'omit', redirect: 'error', signal: controller.signal
+    });
+    if (!response.ok) throw new Error(`IDE 未接受提交结果（${response.status}）。`);
+  } finally { clearTimeout(timer); activeRequests.delete(controller); }
 }
 
 async function dispatchSubmission(job) {
   if (!job || typeof job.id !== 'string' || ideSource(job.url) !== job.problemId ||
     !['C', 'C++14'].includes(job.language) || typeof job.source !== 'string' ||
     job.source.length > 1_048_576) return { id: job?.id || '', ok: false, error: '提交任务无效。' };
+  await requireDataConsent();
   const scope = ideScope(job.url);
   const saved = await chrome.storage.session.get(BRIDGE_TABS_KEY);
   const tabs = (saved[BRIDGE_TABS_KEY] || []).filter(item => item.scope === scope);
@@ -582,6 +643,7 @@ async function dispatchSubmission(job) {
   }
   if (!item) return { id: job.id, ok: false, error: '请在浏览器中保留已登录的 NEUOJ 标签页，并重新导入题目。' };
   try {
+    await requireDataConsent();
     const result = await chrome.tabs.sendMessage(item.tabId, { type: 'IDE_SUBMIT', job });
     if (result && typeof result.ok === 'boolean') return { id: job.id, ok: result.ok,
       ...(result.url ? { url: result.url } : {}), ...(result.error ? { error: result.error } : {}) };
@@ -590,7 +652,9 @@ async function dispatchSubmission(job) {
 }
 
 async function pollBridge(endpoint, token, generation = bridgeGeneration) {
+  await requireDataConsent();
   const controller = new AbortController();
+  activeRequests.add(controller);
   bridgePollController = controller;
   const timer = setTimeout(() => controller.abort(), 25000);
   try {
@@ -605,16 +669,19 @@ async function pollBridge(endpoint, token, generation = bridgeGeneration) {
     const result = await dispatchSubmission(job);
     await postBridgeResult(endpoint, token, result);
     return true;
-  } finally { clearTimeout(timer); if (bridgePollController === controller) bridgePollController = null; }
+  } finally { clearTimeout(timer); activeRequests.delete(controller); if (bridgePollController === controller) bridgePollController = null; }
 }
 
 function startBridge() {
   if (bridgeLoop) return bridgeLoop;
   const generation = bridgeGeneration;
+  let stopKeepingActive = () => {};
   bridgeLoop = (async () => {
     const token = await bridgeToken();
     const endpoint = await storedBridgeEndpoint();
     if (!token || !endpoint) return;
+    await requireDataConsent();
+    stopKeepingActive = keepBackgroundActive();
     let failures = 0;
     while (generation === bridgeGeneration) {
       const state = await bridgeEndpointState(endpoint);
@@ -639,6 +706,7 @@ function startBridge() {
       }
     }
   })().finally(() => {
+    stopKeepingActive();
     bridgeLoop = null;
     if (generation !== bridgeGeneration) startBridge().catch(console.error);
   });
@@ -651,6 +719,7 @@ if (chrome.alarms) chrome.alarms.onAlarm.addListener(alarm => {
 });
 
 async function importToIde(problem, sender) {
+  await requireDataConsent();
   const identity = ideSource(sender?.url);
   if (!identity || problem?.id !== identity || ideSource(problem?.url) !== identity || problem.protocolVersion !== 1 ||
     typeof problem.title !== 'string' || typeof problem.statement !== 'string' ||
@@ -663,8 +732,10 @@ async function importToIde(problem, sender) {
   const endpoint = await discoverBridge();
   const token = await bridgeToken(true);
   const controller = new AbortController();
+  activeRequests.add(controller);
   const timer = setTimeout(() => controller.abort(), 10000);
   async function request(path, options = {}) {
+    await requireDataConsent();
     const response = await fetch(bridgeUrl(endpoint.port, path), {
       ...options, headers: { 'Content-Type': 'application/json', 'X-NEUOJ-Pair': token },
       signal: controller.signal, redirect: 'error', credentials: 'omit'
@@ -693,8 +764,11 @@ async function importToIde(problem, sender) {
     }
     return { ok: true };
   } catch (error) {
-    if (controller.signal.aborted) throw new Error('IDE 连接超时。');
+    if (controller.signal.aborted) {
+      if (controller.signal.reason?.name === 'Error') throw controller.signal.reason;
+      throw new Error('IDE 连接超时。');
+    }
     if (error instanceof TypeError) throw new Error('无法连接 CLion，请确认插件已启动。');
     throw error;
-  } finally { clearTimeout(timer); }
+  } finally { clearTimeout(timer); activeRequests.delete(controller); }
 }

@@ -172,6 +172,7 @@ test('同一 CLion 实例重新导入不取消等待中的提交任务', async (
   app.session.ideBridgeEndpoint = endpoint;
   app.session.ideBridgeTabs = [{ tabId: 10, scope: 'https://oj.neu.edu.cn' }];
   const pending = app.context.pollBridge(endpoint, token);
+  await new Promise(resolve => setImmediate(resolve));
   assert.ok(resolveNext);
   assert.equal((await app.context.importToIde(problem, { url, tab: { id: 10 } })).ok, true);
   assert.equal(pollSignal.aborted, false);

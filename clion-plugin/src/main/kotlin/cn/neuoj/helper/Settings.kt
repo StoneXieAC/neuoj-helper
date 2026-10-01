@@ -59,7 +59,7 @@ class HelperConfigurable : Configurable {
   override fun createComponent(): JComponent {
     content?.let { return it }
     if (!browseAdded) {
-      compiler.addBrowseFolderListener(null, FileChooserDescriptorFactory.createSingleFileDescriptor().withTitle("选择 C/C++ 编译器文件"))
+      compiler.addBrowseFolderListener("选择 C/C++ 编译器文件", null, null, FileChooserDescriptorFactory.createSingleFileDescriptor())
       browseAdded = true
     }
     compiler.preferredSize = Dimension(JBUI.scale(360), compiler.preferredSize.height)

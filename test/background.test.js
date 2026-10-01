@@ -14,7 +14,7 @@ const jsonResponse = (payload, status = 200) => new Response(JSON.stringify(payl
 const sseResponse = stream => new Response(stream, { headers: { 'content-type': 'text/event-stream' } });
 const bytes = text => new TextEncoder().encode(text);
 
-function setup({ granted = true, apiKey = 'test-secret', reasoningEffort, customPrompt, respond = () => jsonResponse({ choices: [{ message: { content: '分析结果' } }] }), timeout = false, timers, clock = Date, localStore, failResultWrite = false, supportsAccessLevel = true } = {}) {
+function setup({ granted = true, apiKey = 'test-secret', reasoningEffort, customPrompt, respond = () => jsonResponse({ choices: [{ message: { content: '分析结果' } }] }), timeout = false, timers, clock = Date, localStore, failResultWrite = false, supportsAccessLevel = true, privacy = {} } = {}) {
   let messageListener;
   let connectListener;
   let actionClicked;
@@ -24,12 +24,15 @@ function setup({ granted = true, apiKey = 'test-secret', reasoningEffort, custom
   const windows = new Map();
   const session = {};
   const local = localStore || { baseUrl: 'http://localhost:8765/v1', apiKey, model: 'custom-model', reasoningEffort, systemPrompt: customPrompt };
+  if (privacy.consent) local.dataTransmissionConsent = privacy.consent;
+  let storageChanged;
   let permissionRequest;
   const requests = [];
   const loggedErrors = [];
   const chrome = {
     runtime: {
       id: 'test',
+      getManifest() { return privacy.firefox ? { browser_specific_settings: { gecko: {} } } : {}; },
       onInstalled: { addListener() {} }, onStartup: { addListener() {} },
       onMessage: { addListener(fn) { messageListener = fn; } },
       onConnect: { addListener(fn) { connectListener = fn; } },
@@ -48,6 +51,7 @@ function setup({ granted = true, apiKey = 'test-secret', reasoningEffort, custom
       async update(id, options) { if (!windows.has(id)) throw Error('window closed'); if (options.focused) optionsFocused++; return windows.get(id); }
     },
     storage: {
+      onChanged: { addListener(fn) { storageChanged = fn; } },
       local: { ...(supportsAccessLevel ? { async setAccessLevel() {} } : {}), async get() { return local; }, async set(value) {
         if (failResultWrite && Object.hasOwn(value, 'analysisResults')) throw new Error('存储写入失败');
         Object.assign(local, value);
@@ -58,7 +62,7 @@ function setup({ granted = true, apiKey = 'test-secret', reasoningEffort, custom
         async remove(key) { delete session[key]; }
       }
     },
-    permissions: { async contains(value) { permissionRequest = value; return granted; } }
+    permissions: { async getAll() { return privacy.native ? { data_collection: [] } : {}; }, async contains(value) { permissionRequest = value; return granted; } }
   };
   const fetch = async (url, options) => {
     if (url === 'chrome-extension://test/prompts/system.md') return new Response(systemPrompt);
@@ -100,6 +104,10 @@ function setup({ granted = true, apiKey = 'test-secret', reasoningEffort, custom
     },
     async clickAction(tab) { actionClicked(tab); await new Promise(resolve => setImmediate(resolve)); },
     closeOptions() { windows.delete(session.settingsWindowId); },
+    revokeConsent() {
+      local.dataTransmissionConsent = { version: 1, granted: false };
+      storageChanged({ dataTransmissionConsent: { newValue: local.dataTransmissionConsent } }, 'local');
+    },
     get requests() { return requests; },
     get permissionRequest() { return permissionRequest; },
     get optionsOpened() { return optionsOpened; },
@@ -581,4 +589,37 @@ test('思考汇总固定耗时，晚到 token 用量只更新计数，同事件�
   await second.done;
   assert.equal(second.events[0].type, 'THINKING_SUMMARY');
   assert.equal(second.events[0].durationMs, 0);
+});
+
+
+test('旧版 Firefox 接受授权后可完成模型分析，缺失授权不请求接口', async () => {
+  const accepted = setup({ privacy: { firefox: true, consent: { version: 1, granted: true } } });
+  assert.equal((await accepted.open().done).type, 'DONE');
+  assert.equal(accepted.requests.length, 1);
+  const rejected = setup({ privacy: { firefox: true } });
+  const result = await rejected.open().done;
+  assert.equal(result.type, 'ERROR');
+  assert.match(result.error, /同意数据发送/);
+  assert.equal(rejected.requests.length, 0);
+});
+
+test('旧版 Firefox 撤回授权会取消正在等待模型响应的请求', async () => {
+  let ready;
+  let signal;
+  const requested = new Promise(resolve => { ready = resolve; });
+  const app = setup({ privacy: { firefox: true, consent: { version: 1, granted: true } },
+    respond(_url, options) {
+      signal = options.signal;
+      ready();
+      return new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(new DOMException('取消', 'AbortError')), { once: true }));
+    }
+  });
+  const run = app.open();
+  await requested;
+  app.revokeConsent();
+  assert.equal(signal.aborted, true);
+  const result = await run.done;
+  assert.equal(result.type, 'ERROR');
+  assert.match(result.error, /授权已撤回/);
+  assert.equal(app.requests.length, 1);
 });

@@ -350,8 +350,8 @@ class HelperPanel(private val project: Project) : JPanel(BorderLayout(0, 6)), Di
     submissionBannerHost.revalidate(); submissionBannerHost.repaint()
   }
   private fun showConnectionError(message: String) {
-    val panel = EditorNotificationPanel(EditorNotificationPanel.Status.Error).text(message)
-    panel.setCloseAction { clearSubmissionBanner() }
+    val panel = EditorNotificationPanel(com.intellij.ui.JBColor.namedColor("EditorNotification.errorBackground", com.intellij.ui.JBColor(0xffe8e8, 0x593b3b))).text(message)
+    panel.createActionLabel("关闭") { clearSubmissionBanner() }
     submissionBannerHost.removeAll()
     submissionBannerHost.add(CardRow(panel) {
       cardsScroll.verticalScrollBar.width.takeIf { it > 0 } ?: cardsScroll.verticalScrollBar.preferredSize.width
@@ -360,10 +360,10 @@ class HelperPanel(private val project: Project) : JPanel(BorderLayout(0, 6)), Di
     submissionBannerHost.revalidate(); submissionBannerHost.repaint()
   }
   private fun showSubmissionBanner(message: String, actionText: String? = null, actionUrl: String? = null) {
-    val panel = EditorNotificationPanel(EditorNotificationPanel.Status.Info).text(message)
+    val panel = EditorNotificationPanel().text(message)
     if (actionText != null && actionUrl != null)
       panel.createActionLabel(actionText) { BrowserUtil.browse(actionUrl) }
-    panel.setCloseAction { clearSubmissionBanner() }
+    panel.createActionLabel("关闭") { clearSubmissionBanner() }
     submissionBannerHost.removeAll()
     submissionBannerHost.add(CardRow(panel) {
       cardsScroll.verticalScrollBar.width.takeIf { it > 0 } ?: cardsScroll.verticalScrollBar.preferredSize.width

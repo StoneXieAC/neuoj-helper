@@ -35,3 +35,8 @@ button:disabled { opacity:.55; cursor:default; }
 #connectionMessage { margin:0; color:#b42318; font-size:12px; }
 #connectionMessage[data-state="success"] { color:#15803d; }
 @media (max-width:580px) { body { padding:0; } main { height:100vh; border:0; border-radius:0; } .toolbar { padding:12px 16px; } .layout { grid-template-columns:120px minmax(0,1fr); } .settings-panel { padding:16px; } }
+
+#legacy-consent:not([hidden]) { display:grid; gap:8px; margin-top:12px; padding:12px; border:1px solid #d9e1ee; border-radius:6px; }
+#legacy-consent label { display:flex; align-items:center; gap:8px; }
+#dataConsent { width:auto; margin:0; }
+#revokeConsent { justify-self:start; padding:6px 12px; }

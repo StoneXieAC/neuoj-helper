@@ -19,6 +19,28 @@ const fields = {
 };
 let defaultPrompt = '';
 let savedValues;
+let legacyConsentRequired = false;
+let savedConsent = false;
+const consentCheckbox = document.getElementById('dataConsent');
+
+async function needsLegacyConsent() {
+  if (!chrome.runtime.getManifest?.().browser_specific_settings?.gecko) return false;
+  return !('data_collection' in await chrome.permissions.getAll());
+}
+
+async function saveConsent() {
+  if (!legacyConsentRequired) return;
+  await chrome.storage.local.set({ dataTransmissionConsent: { version: 1, granted: consentCheckbox.checked } });
+  savedConsent = consentCheckbox.checked;
+}
+
+document.getElementById('revokeConsent').addEventListener('click', async () => {
+  try {
+    consentCheckbox.checked = false;
+    await saveConsent();
+    message.textContent = '已撤回数据发送授权。';
+  } catch (error) { message.textContent = `撤回失败：${error.message}`; }
+});
 
 function selectCategory(id, focus = false) {
   for (const category of CATEGORIES) {
@@ -66,13 +88,18 @@ function parseBaseUrl(input) {
 }
 
 Promise.all([
-  chrome.storage.local.get(['baseUrl', 'apiKey', 'model', 'reasoningEffort', 'systemPrompt']),
+  chrome.storage.local.get(['baseUrl', 'apiKey', 'model', 'reasoningEffort', 'systemPrompt', 'dataTransmissionConsent']),
   fetch(chrome.runtime.getURL('prompts/system.md')).then(async response => {
     if (!response.ok) throw new Error('无法读取内置提示词。');
     return (await response.text()).trim();
-  })
-]).then(([saved, prompt]) => {
+  }),
+  needsLegacyConsent()
+]).then(([saved, prompt, needsConsent]) => {
   if (!prompt) throw new Error('内置提示词为空。');
+  legacyConsentRequired = needsConsent;
+  document.getElementById('legacy-consent').hidden = !needsConsent;
+  savedConsent = saved.dataTransmissionConsent?.version === 1 && saved.dataTransmissionConsent.granted === true;
+  consentCheckbox.checked = savedConsent;
   defaultPrompt = prompt;
   fields.baseUrl.value = saved.baseUrl || 'https://api.deepseek.com';
   fields.apiKey.value = saved.apiKey || '';
@@ -95,6 +122,7 @@ document.getElementById('restoreDefault').addEventListener('click', () => {
 restoreButton.addEventListener('click', () => {
   if (!savedValues) return;
   for (const [key, value] of Object.entries(savedValues)) fields[key].value = value;
+  consentCheckbox.checked = savedConsent;
   message.textContent = '';
   connectionMessage.textContent = '';
   delete connectionMessage.dataset.state;
@@ -108,6 +136,10 @@ testButton.addEventListener('click', async () => {
   if (!baseUrl || !apiKey || !model) {
     connectionMessage.textContent = '';
     message.textContent = '请填写有效的地址、API Key 和模型名称。接口地址须为 HTTPS 或本机 HTTP。';
+    return;
+  }
+  if (legacyConsentRequired && !savedConsent) {
+    message.textContent = '请先勾选数据发送授权并确认保存，再测试连接。';
     return;
   }
   testButton.disabled = true;
@@ -165,6 +197,7 @@ form.addEventListener('submit', async event => {
     }
     await chrome.storage.local.set({ baseUrl, apiKey, model, reasoningEffort,
       systemPrompt: systemPrompt.trim() === defaultPrompt ? null : systemPrompt });
+    await saveConsent();
     window.close();
   } catch (error) {
     message.textContent = `保存失败：${error.message}`;

@@ -29,14 +29,15 @@ test('Firefox 构建只替换清单并复制全部扩展文件', t => {
   }
   assert.equal(fs.readFileSync(path.join(sourceDir, 'manifest.json'), 'utf8'), sourceManifestText);
   assert.deepEqual(chromium.background, { service_worker: 'src/background.js' });
-  assert.equal(chromium.minimum_chrome_version, '114');
+  assert.equal(chromium.minimum_chrome_version, '110');
   assert.deepEqual(firefox.background, { scripts: ['src/background.js'] });
   assert.equal(firefox.minimum_chrome_version, undefined);
-  assert.equal(firefox.browser_specific_settings.gecko.strict_min_version, '140.0');
+  assert.equal(firefox.browser_specific_settings.gecko.strict_min_version, '115.0');
   assert.equal(firefox.browser_specific_settings.gecko.id, 'neuoj-helper@stonexie');
   assert.deepEqual(firefox.browser_specific_settings.gecko.data_collection_permissions, { required: ['websiteContent', 'authenticationInfo'] });
   assert.deepEqual(firefox.content_scripts, chromium.content_scripts);
-  assert.deepEqual(firefox.optional_host_permissions, chromium.optional_host_permissions);
+  assert.equal(firefox.optional_host_permissions, undefined);
+  assert.deepEqual(firefox.optional_permissions, chromium.optional_host_permissions);
   assert.deepEqual(firefox.permissions, chromium.permissions);
 });
 

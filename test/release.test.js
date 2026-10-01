@@ -83,3 +83,31 @@ test('首次签名写入的工具元数据不会污染构建，成功与失败�
     assert.equal(fs.existsSync(working), false);
   }
 });
+
+test('两端不同版本正确匹配发行标签和五个附件', t => {
+  const { readReleaseVersions, checkReleaseTag, releaseAssetNames } = require('../scripts/versions');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'neuoj-versions-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(root, 'extension'));
+  fs.mkdirSync(path.join(root, 'clion-plugin'));
+  fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({ version: '0.2.2' }));
+  const lock = { version: '0.2.2', packages: { '': { version: '0.2.2' } } };
+  fs.writeFileSync(path.join(root, 'package-lock.json'), JSON.stringify(lock));
+  fs.writeFileSync(path.join(root, 'extension/manifest.json'), JSON.stringify({ version: '0.2.2', version_name: '0.2.2' }));
+  fs.writeFileSync(path.join(root, 'clion-plugin/build.gradle.kts'), 'version = "0.2.2-beta"\n');
+  const versions = readReleaseVersions(root);
+  assert.deepEqual(versions, { web: '0.2.2', clion: '0.2.2-beta', tag: 'v0.2.2-beta' });
+  checkReleaseTag('v0.2.2-beta', versions);
+  assert.throws(() => checkReleaseTag('v0.2.2', versions), /发行标签/);
+  assert.deepEqual(releaseAssetNames(versions), [
+    'neuoj-helper-0.2.2-chrome.zip', 'neuoj-helper-0.2.2-firefox.xpi',
+    'neuoj-clion-helper-0.2.2-beta-macos.zip', 'neuoj-clion-helper-0.2.2-beta-linux-x64.zip',
+    'neuoj-clion-helper-0.2.2-beta-windows-x64.zip'
+  ]);
+  fs.writeFileSync(path.join(root, 'clion-plugin/build.gradle.kts'), 'version = "0.2.3-beta"\n');
+  assert.throws(() => readReleaseVersions(root), /版本字段/);
+  fs.writeFileSync(path.join(root, 'clion-plugin/build.gradle.kts'), 'version = "0.2.2-beta"\n');
+  lock.packages[''].version = '0.2.1';
+  fs.writeFileSync(path.join(root, 'package-lock.json'), JSON.stringify(lock));
+  assert.throws(() => readReleaseVersions(root), /版本字段/);
+});

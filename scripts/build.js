@@ -10,10 +10,12 @@ function build(browser, sourceDir = path.join(ROOT, 'extension'), outputDir = pa
   if (browser === 'firefox') {
     manifest.background = { scripts: [manifest.background.service_worker] };
     delete manifest.minimum_chrome_version;
+    manifest.optional_permissions = [...(manifest.optional_permissions || []), ...manifest.optional_host_permissions];
+    delete manifest.optional_host_permissions;
     manifest.browser_specific_settings = {
       gecko: {
         id: 'neuoj-helper@stonexie',
-        strict_min_version: '140.0',
+        strict_min_version: '115.0',
         data_collection_permissions: { required: ['websiteContent', 'authenticationInfo'] }
       }
     };

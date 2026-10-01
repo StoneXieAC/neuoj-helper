@@ -24,7 +24,7 @@ jobs:
       - name: 检查版本标签
         if: startsWith(github.ref, 'refs/tags/')
         run: |
-          node -e "const fs = require('node:fs'); const p = require('./package.json').version; const l = require('./package-lock.json').version; const m = require('./extension/manifest.json'); const g = fs.readFileSync('clion-plugin/build.gradle.kts', 'utf8').match(/^version = \"([^\"]+)\"$/m)?.[1]; if (p !== l || p !== m.version_name || p !== g || m.version !== p.replace(/-.+$/, '') || process.env.GITHUB_REF_NAME !== 'v' + p) throw new Error('标签与项目版本不一致');"
+          node scripts/versions.js "$GITHUB_REF_NAME"
       - run: npm ci
       - run: npm test
       - run: npm run build
@@ -97,9 +97,34 @@ jobs:
           path: clion-plugin/build/distributions/neuoj-clion-helper-*-${{ matrix.target }}.zip
           if-no-files-found: error
 
+  compatibility:
+    strategy:
+      fail-fast: false
+      matrix:
+        ide: ['2023.3', '2024.2', '2025.2', '2026.2.2']
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: gradle/actions/setup-gradle@v6
+      - name: 使用最低平台编译并验证目标 CLion
+        working-directory: clion-plugin
+        run: ./gradlew test buildPlugin verifyPlugin -PverificationIdeVersion=${{ matrix.ide }}
+      - name: 保存兼容性验证报告
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: clion-compatibility-${{ matrix.ide }}
+          path: clion-plugin/build/reports/pluginVerifier/
+          if-no-files-found: ignore
+
   release:
     if: startsWith(github.ref, 'refs/tags/')
-    needs: [build, clion-test, clion]
+    needs: [build, clion-test, clion, compatibility]
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     permissions:
@@ -139,12 +164,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          version="$(node -p "require('./package.json').version")"
+          version="$(node -p "require('./scripts/versions').readReleaseVersions().web")"
+          clion_version="$(node -p "require('./scripts/versions').readReleaseVersions().clion")"
           chrome="dist/releases/neuoj-helper-${version}-chrome.zip"
           firefox="dist/releases/neuoj-helper-${version}-firefox.xpi"
-          clion_macos="dist/releases/neuoj-clion-helper-${version}-macos.zip"
-          clion_linux="dist/releases/neuoj-clion-helper-${version}-linux-x64.zip"
-          clion_windows="dist/releases/neuoj-clion-helper-${version}-windows-x64.zip"
+          clion_macos="dist/releases/neuoj-clion-helper-${clion_version}-macos.zip"
+          clion_linux="dist/releases/neuoj-clion-helper-${clion_version}-linux-x64.zip"
+          clion_windows="dist/releases/neuoj-clion-helper-${clion_version}-windows-x64.zip"
           test -f "$chrome"
           test -f "$firefox"
           test -f "$clion_macos"
