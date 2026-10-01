@@ -83,4 +83,6 @@ tasks.withType<JavaCompile>().configureEach { options.release.set(17) }
 // 平台构建插件会配置任务的 JVM 目标，因此这里显式覆盖为最低运行时版本。
 tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {
   compilerOptions.jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
+  // 直接继承平台的 JVM 默认方法，避免生成调用内部 API 的兼容桥接方法。
+  compilerOptions.jvmDefault.set(org.jetbrains.kotlin.gradle.dsl.JvmDefaultMode.NO_COMPATIBILITY)
 }
