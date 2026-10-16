@@ -1,0 +1,2 @@
+# Windows Gradle Wrapper 保留 CRLF，并按 CRLF 检查空白。
+*.bat text eol=crlf whitespace=cr-at-eol
