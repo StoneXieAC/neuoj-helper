@@ -176,15 +176,25 @@ jobs:
           test -f "$clion_macos"
           test -f "$clion_linux"
           test -f "$clion_windows"
+          notes="docs/releases/${GITHUB_REF_NAME}.md"
+          release_flags=()
+          if [[ "$GITHUB_REF_NAME" == *-* ]]; then
+            release_flags+=(--prerelease)
+          else
+            release_flags+=(--prerelease=false --latest)
+          fi
           if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload "$GITHUB_REF_NAME" "$chrome" "$firefox" "$clion_macos" "$clion_linux" "$clion_windows" --repo "$GITHUB_REPOSITORY" --clobber
-            if [[ "$GITHUB_REF_NAME" == *-* ]]; then
-              gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --prerelease
+            if [[ -f "$notes" ]]; then
+              gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --notes-file "$notes" "${release_flags[@]}"
+            else
+              gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" "${release_flags[@]}"
             fi
           else
-            release_flags=()
-            if [[ "$GITHUB_REF_NAME" == *-* ]]; then
-              release_flags+=(--prerelease)
+            if [[ -f "$notes" ]]; then
+              release_flags+=(--notes-file "$notes")
+            else
+              release_flags+=(--generate-notes)
             fi
-            gh release create "$GITHUB_REF_NAME" "$chrome" "$firefox" "$clion_macos" "$clion_linux" "$clion_windows" --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes "${release_flags[@]}"
+            gh release create "$GITHUB_REF_NAME" "$chrome" "$firefox" "$clion_macos" "$clion_linux" "$clion_windows" --repo "$GITHUB_REPOSITORY" --verify-tag "${release_flags[@]}"
           fi

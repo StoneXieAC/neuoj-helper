@@ -3,7 +3,7 @@
   <name>NEUOJ Helper</name>
   <vendor>NEUOJ Helper</vendor>
   <!-- 校验器要求描述前 40 个字符使用拉丁字符；后续保留中文说明。 -->
-  <description>NEUOJ Helper for CLion: C/C++ competitive programming. 支持将 NEUOJ 题目的样例导入 IDE，在本地测试 C/C++ 代码，并直接提交至 NEUOJ。</description>
+  <description>NEUOJ Helper for CLion: C/C++ competitive programming. 从 NEUOJ 导入题面和样例，在本地运行单文件 C/C++、比较输出并查看 CPU 用时，也可通过浏览器登录态提交代码。</description>
   <depends>com.intellij.modules.platform</depends>
   <depends>com.intellij.clion</depends>
   <extensions defaultExtensionNs="com.intellij">

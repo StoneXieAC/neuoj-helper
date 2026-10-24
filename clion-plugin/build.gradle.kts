@@ -7,7 +7,7 @@ plugins {
 }
 
 group = "cn.neuoj"
-version = "0.2.2-beta"
+version = "0.2.3"
 val targetPlatform = providers.gradleProperty("targetPlatform").orNull
 require(targetPlatform == null || targetPlatform in setOf("macos", "linux-x64", "windows-x64")) {
   "targetPlatform 必须为 macos、linux-x64 或 windows-x64"
